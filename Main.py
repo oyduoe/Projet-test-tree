@@ -37,12 +37,17 @@ def run_calculations(input_data: dict) -> dict:
     if input_data["Convergence"]:
         results["ConvergenceFig"] = arbre.Convergence_fig
 
-    # Calcul des Greeks avec l'arbre Trinomial
-    if input_data["ComputeDeltaAndGammaTree"] and not input_data["Convergence"]:
+    # ---- CORRECTION ----
+    # On retire le "and not input_data['Convergence']" pour que Delta/Gamma
+    # et Vega soient également calculés lorsque Convergence est coché.
+    # Les attributs pricer.DeltaTree / pricer.GammaTree sont peuplés à chaque
+    # itération dans Tree.build_tree et reflètent donc le dernier arbre calculé.
+    if input_data["ComputeDeltaAndGammaTree"]:
         results["Delta"] = pricer.DeltaTree
         results["Gamma"] = pricer.GammaTree
-    if input_data["ComputeVegaTree"] and not input_data["Convergence"]:
+    if input_data["ComputeVegaTree"]:
         results["Vega"] = arbre.compute_vega_tree(params, pricer, mkt)
+    # --------------------
 
     # Étude du prix par rapport au strike
     if input_data["StrikeStudy"]:
