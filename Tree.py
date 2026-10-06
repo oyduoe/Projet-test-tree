@@ -400,7 +400,16 @@ class Tree:
         start_time_tree = time.time()  # Début du timer
         max_depth = pricer.timeSteps  # Nombre maximal de pas de temps
         width = max_depth + 1  # Largeur du DataFrame (nombre de colonnes)
-        self.df = pd.DataFrame("", index=range(2 * max_depth + 1), columns=range(width))
+
+        # ---- CORRECTION ----
+        # Avant : pd.DataFrame("", index=..., columns=...) créait un StringDtype,
+        # ce qui provoquait l'erreur "Invalid value ... for dtype 'str'" lors
+        # de l'affectation d'un float. On force dtype=object.
+        self.df = pd.DataFrame(index=range(2 * max_depth + 1),
+                               columns=range(width),
+                               dtype=object)
+        # --------------------
+
         # Initialiser la position de la racine
         col_center = 0
         current_node = self.Root_Node
