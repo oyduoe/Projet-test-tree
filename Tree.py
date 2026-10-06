@@ -97,11 +97,16 @@ class Tree:
             pricer.GammaTree = self.Compute_GammaTree(price, self.Root_Node.UpNode.OptPrice,
                                                       self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
 
-        # Stocke les résultats en fonction de si l'on a demandé la convergence ou non
-        if condition_Convergence:  # Si on effectue les graphiques de convergence
+        # ---- CORRECTION ----
+        # On stocke les résultats à chaque itération (le dernier écrase le précédent).
+        # Ainsi, même en mode Convergence, les résultats finaux (BS, MC, Delta, Gamma,
+        # Vega, prix de l'arbre) sont bien récupérés.
+        if condition_Convergence:
             pricer.compute_perf(T, price, time_calculation, BS_Price)
-        elif not isVega:  # On ne veut pas afficher les résultats des prix lorsqu'on calcule le vega non plus
-            self.display_results(pricer, time_calculation, price, self.time_calculation_tree, pricer.newTs)
+        if not isVega:
+            self.display_results(pricer, time_calculation, price,
+                                 self.time_calculation_tree, pricer.newTs)
+        # --------------------
 
     def display_results(self, pricer: Pricer, time_calculation: float,
                         price: float, time_calculation_tree: float, newTs: int):
@@ -401,14 +406,10 @@ class Tree:
         max_depth = pricer.timeSteps  # Nombre maximal de pas de temps
         width = max_depth + 1  # Largeur du DataFrame (nombre de colonnes)
 
-        # ---- CORRECTION ----
-        # Avant : pd.DataFrame("", index=..., columns=...) créait un StringDtype,
-        # ce qui provoquait l'erreur "Invalid value ... for dtype 'str'" lors
-        # de l'affectation d'un float. On force dtype=object.
+        # dtype=object pour accepter des valeurs mixtes (str/float/None)
         self.df = pd.DataFrame(index=range(2 * max_depth + 1),
                                columns=range(width),
                                dtype=object)
-        # --------------------
 
         # Initialiser la position de la racine
         col_center = 0
