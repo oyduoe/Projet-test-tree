@@ -42,7 +42,6 @@ with col4:
     bs_condition = st.checkbox("Black-Scholes Pricing", value=True)
     mc_condition = st.checkbox("Monte Carlo Pricing")
     binom_condition = st.checkbox("Binomial Pricing")
-    compute_greeks = st.checkbox("Calculate the Greeks (Delta, Gamma, Vega, Vomma, Vanna, Theta)")
 
 st.subheader("Comparaisons")
 c1, c2, c3 = st.columns(3)
@@ -76,12 +75,11 @@ if st.button("Run the calculation", type="primary"):
         "BSCondition": bs_condition,
         "MCCondition": mc_condition,
         "BinomCondition": binom_condition,
-        "ComputeGreeks": compute_greeks,
         "ComparePricesSteps": compare_prices_steps,
         "CompareAmEur": compare_am_eur,
-        # Anciens flags conservés pour compat (non utilisés)
-        "ComputeDeltaAndGammaTree": compute_greeks,
-        "ComputeVegaTree": compute_greeks,
+        # Flags encore lus par Pricer, toujours True désormais
+        "ComputeDeltaAndGammaTree": True,
+        "ComputeVegaTree": True,
     }
 
     try:
@@ -113,70 +111,88 @@ if "results" in st.session_state:
     # --- Prix principaux ---
     cols = st.columns(4)
     cols[0].metric("Trinomial", f"{results.get('TreePrice', float('nan')):.6f}")
-    cols[1].metric("Black-Scholes", f"{results.get('BS Price', float('nan')):.6f}"
+    cols[1].metric("Black-Scholes",
+                   f"{results.get('BS Price', float('nan')):.6f}"
                    if input_data["BSCondition"] else "—")
-    cols[2].metric("Binomial", f"{results.get('Binom Price', float('nan')):.6f}"
+    cols[2].metric("Binomial",
+                   f"{results.get('Binom Price', float('nan')):.6f}"
                    if input_data["BinomCondition"] else "—")
-    cols[3].metric("Monte Carlo", f"{results.get('MC Price', float('nan')):.6f}"
+    cols[3].metric("Monte Carlo",
+                   f"{results.get('MC Price', float('nan')):.6f}"
                    if input_data["MCCondition"] else "—")
 
     # --- Greeks Table ---
-    if input_data["ComputeGreeks"]:
-        st.subheader("Greeks par modèle")
-        greeks_rows = ["Delta", "Gamma", "Vega", "Vomma", "Vanna", "Theta"]
-        greeks_dict = {
-            "Trinomial": results.get("greeks_tree", {}),
-            "Binomial": results.get("greeks_binom", {}),
-            "Black-Scholes": results.get("greeks_bs", {}),
-            "Monte Carlo": results.get("greeks_mc", {}),
-        }
-        # On ne garde que les modèles actifs (dict non vide)
-        greeks_dict = {k: v for k, v in greeks_dict.items() if v}
-        if greeks_dict:
-            data = {}
-            for model, g in greeks_dict.items():
-                data[model] = [g.get(r, float('nan')) for r in greeks_rows]
-            df_g = pd.DataFrame(data, index=greeks_rows)
-            st.dataframe(df_g.style.format("{:.6f}"))
+    # Tree toujours présent ; BS/MC/Binom uniquement s'ils sont cochés.
+    st.subheader("Greeks par modèle")
+    greeks_rows = ["Delta", "Gamma", "Vega", "Vomma", "Vanna", "Theta"]
 
-    # --- Temps ---
+    model_map = [("Tree", "greeks_tree")]
+    if input_data["BSCondition"]:
+        model_map.append(("Black-Scholes", "greeks_bs"))
+    if input_data["BinomCondition"]:
+        model_map.append(("Binomial", "greeks_binom"))
+    if input_data["MCCondition"]:
+        model_map.append(("Monte Carlo", "greeks_mc"))
+
+    data = {}
+    for model_name, key in model_map:
+        g = results.get(key, {}) or {}
+        if g:
+            data[model_name] = [float(g.get(r, float('nan'))) for r in greeks_rows]
+
+    if data:
+        df_g = pd.DataFrame(data, index=greeks_rows)
+        st.dataframe(df_g.round(6), use_container_width=True)
+    else:
+        st.warning("Aucune Greeks disponible.")
+
+    # --- Temps de calcul ---
     with st.expander("Détails des temps de calcul"):
-        for k in ("TimePricing", "BS_Time", "Binom_Time", "MCTime", "Tree Display Time"):
+        for k, label in [("TimePricing", "Trinomial"),
+                         ("BS_Time", "Black-Scholes"),
+                         ("Binom_Time", "Binomial"),
+                         ("MCTime", "Monte Carlo"),
+                         ("Tree Display Time", "Affichage arbre")]:
             if k in results:
-                st.write(f"{k} : {results[k]:.4f} s")
+                st.write(f"{label} : {results[k]:.4f} s")
         if "New TS" in results:
             st.write(f"Nouveau Time Step (spread error) : {results['New TS']:.0f}")
 
     # --- Arbre Trinomial ---
     if "TreeDf" in results and results["TreeDf"] is not None:
         st.subheader("Trinomial Tree (probabilités)")
-        st.dataframe(results["TreeDf"])
+        st.dataframe(results["TreeDf"], use_container_width=True)
         csv = results["TreeDf"].to_csv(index=False).encode("utf-8")
         st.download_button("Télécharger l'arbre (CSV)",
-                           data=csv, file_name="trinomial_tree.csv",
-                           mime="text/csv")
+                           data=csv, file_name="trinomial_tree.csv", mime="text/csv")
 
     # --- Convergence classique ---
     if "ConvergenceFig" in results and results["ConvergenceFig"] is not None:
         st.subheader("Convergence vers Black-Scholes")
-        st.pyplot(results["ConvergenceFig"])
+        st.pyplot(results["ConvergenceFig"], use_container_width=True)
 
     # --- Strike Study ---
     if "StrikeStudyFig" in results and results["StrikeStudyFig"] is not None:
         st.subheader("Prix, Gaps et Slopes vs Strike")
-        st.pyplot(results["StrikeStudyFig"])
+        st.pyplot(results["StrikeStudyFig"], use_container_width=True)
+    if "StrikeStudyError" in results:
+        st.error(f"Erreur Strike Study :\n{results['StrikeStudyError']}")
 
-    # --- Comparatifs : prix/gaps/temps vs steps ---
+    # --- Comparatifs : prix / gaps / temps vs steps ---
     if "ComparePricesSteps" in results:
         comp = results["ComparePricesSteps"]
-        st.subheader("Convergence des prix vs Steps")
-        st.pyplot(comp["prices_vs_steps"])
+        st.subheader("Prix vs Steps")
+        st.pyplot(comp["prices_vs_steps"], use_container_width=True)
         st.subheader("Gaps de prix vs Steps")
-        st.pyplot(comp["gaps_vs_steps"])
+        st.pyplot(comp["gaps_vs_steps"], use_container_width=True)
         st.subheader("Temps de calcul vs Steps")
-        st.pyplot(comp["time_vs_steps"])
+        st.pyplot(comp["time_vs_steps"], use_container_width=True)
+    if "ComparePricesStepsError" in results:
+        st.error(f"Erreur Prices vs Steps :\n{results['ComparePricesStepsError']}")
 
     # --- Comparatif American vs European ---
     if "CompareAmEur" in results and results["CompareAmEur"] is not None:
         st.subheader("Gap American - European par modèle")
-        st.pyplot(results["CompareAmEur"])
+        st.pyplot(results["CompareAmEur"], use_container_width=True)
+    if "CompareAmEurError" in results:
+        st.error(f"Erreur American vs European :\n{results['CompareAmEurError']}")
