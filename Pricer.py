@@ -27,11 +27,17 @@ class Pricer:
 
         self.Binom_price = 0.0
         self.Binom_Time = 0.0
+        self.Binom_condition = False  # positionné par Main
 
+        # DataFrame de convergence : contient Tree - BS, + Tree - MC / Tree - Binom
         self.Convergence_df = pd.DataFrame(
             columns=["Time Steps", "Tree Price",
-                     "Time to compute Trinomial Tree", "(Tree – BS) x NbSteps"],
-            index=range(self.timeSteps), dtype=object)
+                     "Time to compute Trinomial Tree",
+                     "(Tree – BS) x NbSteps",
+                     "(Tree – MC) x NbSteps",
+                     "(Tree – Binom) x NbSteps"],
+            index=range(1, self.timeSteps + 1),
+            dtype=object)
 
         self.BS_price: float = 0.00
         self.BS_Time: float = 0.00
@@ -42,24 +48,48 @@ class Pricer:
         self.GammaTree: float = 0.0
         self.VegaTree: float = 0.0
 
-    def compute_perf(self, T, price, time_calculation, bs_price):
+    # ------------------------------------------------------------------
+    def compute_perf(self, T, price, time_calculation, bs_price,
+                     mc_price=None, binom_price=None):
         self.Convergence_df.loc[T, "Time Steps"] = T
         self.Convergence_df.loc[T, "Tree Price"] = price
         self.Convergence_df.loc[T, "Time to compute Trinomial Tree"] = time_calculation
         self.Convergence_df.loc[T, "(Tree – BS) x NbSteps"] = (price - bs_price) * T
+        if mc_price is not None:
+            self.Convergence_df.loc[T, "(Tree – MC) x NbSteps"] = (price - mc_price) * T
+        if binom_price is not None:
+            self.Convergence_df.loc[T, "(Tree – Binom) x NbSteps"] = (price - binom_price) * T
 
     def create_plot_convergence(self):
-        fig, ax = plt.subplots(figsize=(8, 6))
-        ax.plot(self.Convergence_df["Time Steps"].astype(float),
-                self.Convergence_df["(Tree – BS) x NbSteps"].astype(float), marker='o')
-        ax.set_title("Convergence vers Black-Scholes en fonction du pas de temps")
-        ax.set_xlabel("Time Steps"); ax.set_ylabel("(Tree – BS) x NbSteps"); ax.grid(True)
+        df = self.Convergence_df.copy()
+        df = df.dropna(subset=["Time Steps"])
+
+        x = pd.to_numeric(df["Time Steps"], errors='coerce')
+        y_bs = pd.to_numeric(df["(Tree – BS) x NbSteps"], errors='coerce')
+
+        fig, ax = plt.subplots(figsize=(9, 6))
+        ax.plot(x, y_bs, marker='o', label='Tree - BS')
+
+        for col, lbl, marker in [("(Tree – Binom) x NbSteps", "Tree - Binomial", 's'),
+                                 ("(Tree – MC) x NbSteps", "Tree - Monte Carlo", 'x')]:
+            if col in df.columns:
+                y = pd.to_numeric(df[col], errors='coerce')
+                if y.notna().any():
+                    ax.plot(x, y, marker=marker, label=lbl)
+
+        ax.set_title("Convergence des modèles vs Black-Scholes")
+        ax.set_xlabel("Time Steps")
+        ax.set_ylabel("(Tree – Modèle) x NbSteps")
+        ax.grid(True)
+        ax.legend()
         return fig
 
+    # ------------------------------------------------------------------
     def create_plot_StrikeStudy(self, df_strike, initial_strike, final_strike):
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
+        """Un seul graphe : prix + gaps (axe gauche) et slopes (axe droit)."""
+        fig, ax1 = plt.subplots(figsize=(12, 6))
 
-        # ------ Sous-graphe gauche : prix + gaps ------
+        # ---- Axe GAUCHE : prix et gaps ----
         ax1.plot(df_strike["Strike"].astype(float), df_strike["BS Price"].astype(float),
                  label="BS", color='green', linestyle='-')
         ax1.plot(df_strike["Strike"].astype(float), df_strike["Tree Price"].astype(float),
@@ -70,6 +100,7 @@ class Pricer:
         if "MC Price" in df_strike.columns and df_strike["MC Price"].astype(float).abs().sum() > 0:
             ax1.plot(df_strike["Strike"].astype(float), df_strike["MC Price"].astype(float),
                      label="Monte Carlo", color='purple', linestyle='-')
+
         ax1.plot(df_strike["Strike"].astype(float), df_strike["Tree-BS"].astype(float),
                  label="Tree - BS", color='red', linestyle='--')
         if "Tree-Binom" in df_strike.columns:
@@ -78,11 +109,15 @@ class Pricer:
         if "Tree-MC" in df_strike.columns:
             ax1.plot(df_strike["Strike"].astype(float), df_strike["Tree-MC"].astype(float),
                      label="Tree - MC", color='magenta', linestyle='--')
-        ax1.set_xlim([initial_strike, final_strike])
-        ax1.set_xlabel('Strike'); ax1.set_ylabel('Prices / Gaps')
-        ax1.grid(True); ax1.legend(fontsize=8); ax1.set_title("Prices & Gaps vs Strike")
 
-        # ------ Sous-graphe droit : slopes ------
+        ax1.set_xlim([initial_strike, final_strike])
+        ax1.set_xlabel('Strike')
+        ax1.set_ylabel('Prices & Gaps', color='blue')
+        ax1.tick_params(axis='y', labelcolor='blue')
+        ax1.grid(True)
+
+        # ---- Axe DROIT : slopes ----
+        ax2 = ax1.twinx()
         for col, lbl, c in [("Slope BS", "Slope BS", 'green'),
                             ("Slope Tree", "Slope Tree", 'orange'),
                             ("Slope Binom", "Slope Binom", 'blue'),
@@ -91,14 +126,21 @@ class Pricer:
                 vals = df_strike[col].astype(float)
                 if vals.abs().sum() > 0:
                     ax2.plot(df_strike["Strike"].astype(float), vals,
-                             label=lbl, color=c, linestyle='--')
-        ax2.set_xlim([initial_strike, final_strike])
-        ax2.set_xlabel('Strike'); ax2.set_ylabel('Slope')
-        ax2.grid(True); ax2.legend(fontsize=8); ax2.set_title("Slopes vs Strike")
+                             label=lbl, color=c, linestyle=':')
+        ax2.set_ylabel('Slope', color='purple')
+        ax2.tick_params(axis='y', labelcolor='purple')
 
+        # ---- Légende combinée ----
+        lines1, labels1 = ax1.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax1.legend(lines1 + lines2, labels1 + labels2,
+                   loc='best', fontsize=8, ncol=2)
+
+        plt.title("Prices, Gaps & Slopes vs Strike")
         plt.tight_layout()
         return fig
 
+    # ------------------------------------------------------------------
     def compute_time_steps(self, market, params):
         ttm = (params.DateMaturity - self.PricingDate).days / 365
         timeSteps = (3 / (8 * np.sqrt(2 * np.pi))) * (market.SpotPrice / self.gap) * (

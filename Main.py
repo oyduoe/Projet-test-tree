@@ -18,7 +18,6 @@ from Greeks import finite_difference_greeks
 # COMPARATIFS
 # ======================================================================
 def _compare_prices_vs_steps(input_data, step_list=(5, 10, 20, 40, 80)):
-    """3 figures : prix vs steps, gaps vs steps, temps vs steps."""
     tree_prices, bs_prices, binom_prices, mc_prices = [], [], [], []
     tree_times, bs_times, binom_times, mc_times = [], [], [], []
 
@@ -45,33 +44,20 @@ def _compare_prices_vs_steps(input_data, step_list=(5, 10, 20, 40, 80)):
         pricer.compute_DeltaAndGamma_tree_var = False
         pricer.Binom_condition = False
 
-        # Black-Scholes
-        t0 = time.time()
-        bs_res = Ext.black_sholes()
-        bs_times.append(time.time() - t0)
+        t0 = time.time(); bs_res = Ext.black_sholes(); bs_times.append(time.time() - t0)
         bs_prices.append(float(bs_res["BS Price"]))
 
-        # Trinomial
-        t0 = time.time()
-        arbre.init(mkt, params, pricer, True)
-        tree_times.append(time.time() - t0)
+        t0 = time.time(); arbre.init(mkt, params, pricer, True); tree_times.append(time.time() - t0)
         tree_prices.append(float(arbre.Root_Node.OptPrice))
 
-        # Binomial
-        t0 = time.time()
-        bp = binom.price_option(int(T))
-        binom_times.append(time.time() - t0)
+        t0 = time.time(); bp = binom.price_option(int(T)); binom_times.append(time.time() - t0)
         binom_prices.append(float(bp))
 
-        # Monte Carlo (rapide)
         pricer.timeSteps = min(int(T), 50)
         np.random.seed(42)
-        t0 = time.time()
-        mp = Ext.monte_carlo_price(5000)
-        mc_times.append(time.time() - t0)
+        t0 = time.time(); mp = Ext.monte_carlo_price(5000); mc_times.append(time.time() - t0)
         mc_prices.append(float(mp))
 
-    # Figure 1 : prix vs steps
     fig1, ax1 = plt.subplots(figsize=(9, 5))
     ax1.plot(step_list, tree_prices, marker='o', label='Trinomial')
     ax1.plot(step_list, binom_prices, marker='s', label='Binomial')
@@ -80,7 +66,6 @@ def _compare_prices_vs_steps(input_data, step_list=(5, 10, 20, 40, 80)):
     ax1.set_xlabel("Time Steps"); ax1.set_ylabel("Option Price")
     ax1.set_title("Prix vs Steps"); ax1.grid(True); ax1.legend()
 
-    # Figure 2 : gaps vs steps
     gaps_bs = [t - b for t, b in zip(tree_prices, bs_prices)]
     gaps_bn = [t - b for t, b in zip(tree_prices, binom_prices)]
     gaps_mc = [t - m for t, m in zip(tree_prices, mc_prices)]
@@ -92,7 +77,6 @@ def _compare_prices_vs_steps(input_data, step_list=(5, 10, 20, 40, 80)):
     ax2.set_xlabel("Time Steps"); ax2.set_ylabel("Gap")
     ax2.set_title("Gaps vs Steps"); ax2.grid(True); ax2.legend()
 
-    # Figure 3 : temps vs steps
     fig3, ax3 = plt.subplots(figsize=(9, 5))
     ax3.plot(step_list, tree_times, marker='o', label='Trinomial')
     ax3.plot(step_list, binom_times, marker='s', label='Binomial')
@@ -105,7 +89,14 @@ def _compare_prices_vs_steps(input_data, step_list=(5, 10, 20, 40, 80)):
 
 
 def _compare_american_european(input_data):
-    """Bar chart des gaps American - European par modèle."""
+    """Gap American - European par modèle.
+
+    Attention :
+      - Tree et Binomial modélisent tous les deux l'exercice anticipé.
+      - Black-Scholes est intrinsèquement européen (l'option "American" n'a
+        aucun effet) → gap = 0.
+      - Monte Carlo dans ce projet ne gère pas l'exercice anticipé → gap = 0.
+    """
     def price_one(exercise):
         local = dict(input_data)
         local["Exercice"] = exercise
@@ -142,11 +133,21 @@ def _compare_american_european(input_data):
     gaps = [am[m] - eu[m] for m in models]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.bar(models, gaps, color=['orange', 'blue', 'green', 'purple'])
+    bars = ax.bar(models, gaps, color=['orange', 'blue', 'green', 'purple'])
     ax.axhline(0, color='black', linewidth=0.5)
     ax.set_ylabel("Prix American - Prix European")
-    ax.set_title("Gap American vs European par modèle")
+    ax.set_title("Gap American vs European par modèle\n"
+                 "(BS et MC ne modélisent pas l'exercice anticipé → gap nul)")
     ax.grid(True, axis='y')
+
+    # Annoter les valeurs
+    for b, g in zip(bars, gaps):
+        ax.text(b.get_x() + b.get_width() / 2,
+                g, f"{g:.4f}",
+                ha='center',
+                va='bottom' if g >= 0 else 'top',
+                fontsize=9)
+    plt.tight_layout()
     return fig
 
 
@@ -165,33 +166,36 @@ def run_calculations(input_data: dict) -> dict:
     binom = Binomial(mkt, params, pricer)
     pricer.Binom_condition = binom_checked
 
-    # ---- Black-Scholes : TOUJOURS calculé (BS toujours présent dans les graphes) ----
+    # ---- BS toujours calculé (présent dans tous les graphes) ----
     t0 = time.time()
     bs_res = Ext.black_sholes()
     pricer.BS_Time = time.time() - t0
-    bs_greeks_all = {
-        k: float(bs_res[k])
-        for k in ("Delta", "Gamma", "Vega", "Vomma", "Vanna", "Theta")
-        if k in bs_res
-    }
+    bs_greeks_all = {k: float(bs_res[k])
+                     for k in ("Delta", "Gamma", "Vega", "Vomma", "Vanna", "Theta")
+                     if k in bs_res}
 
-    # ---- Monte Carlo : uniquement si MC coché ----
+    # ---- MC seulement si coché ----
     if mc_checked:
         np.random.seed(42)
         t0 = time.time()
         Ext.monte_carlo_price(50000)
         pricer.MC_Time = time.time() - t0
 
-    # ---- Binomial : uniquement si Binomial coché ----
+    # ---- Binomial seulement si coché ----
     if binom_checked:
         t0 = time.time()
         binom.price_option(pricer.timeSteps)
         pricer.Binom_price = float(binom.price)
         pricer.Binom_Time = time.time() - t0
 
-    # ---- Arbre Trinomial principal ----
+    # ---- Arbre principal ----
     arbre = Tree()
-    arbre.init(mkt, params, pricer, False)
+    if input_data["Convergence"]:
+        # On passe ext et binom pour que la convergence les calcule
+        arbre.init(mkt, params, pricer, False, ext=Ext, binom=binom)
+    else:
+        arbre.init(mkt, params, pricer, False)
+
     results = dict(arbre.price_results)
     saved_df = arbre.df
 
@@ -211,23 +215,18 @@ def run_calculations(input_data: dict) -> dict:
     if input_data["Convergence"]:
         results["ConvergenceFig"] = arbre.Convergence_fig
 
-    # ---- Greeks Tree : TOUJOURS calculés ----
+    # ---- Greeks ----
     pricer.greeks_tree = arbre.compute_greeks_tree(params, pricer, mkt)
-
-    # ---- Greeks BS : seulement si BS coché (pour le tableau) ----
     pricer.greeks_bs = bs_greeks_all if bs_checked else {}
 
-    # ---- Greeks MC : seulement si MC coché ----
     if mc_checked:
         try:
             pricer.greeks_mc = Ext.monte_carlo_greeks(10000)
-        except Exception as e:
+        except Exception:
             pricer.greeks_mc = {}
-            print(f"MC greeks : {e}")
     else:
         pricer.greeks_mc = {}
 
-    # ---- Greeks Binomial : seulement si Binomial coché ----
     if binom_checked:
         def binom_price_fn(m, p, pr):
             return binom.price_option(pr.timeSteps)
@@ -240,7 +239,7 @@ def run_calculations(input_data: dict) -> dict:
     results["greeks_mc"] = pricer.greeks_mc
     results["greeks_binom"] = pricer.greeks_binom
 
-    # ---- Strike Study : BS toujours, MC/Binom seulement si cochés ----
+    # ---- Strike Study ----
     if input_data["StrikeStudy"]:
         try:
             fig = arbre.compute_StrikeStudy(
@@ -264,7 +263,7 @@ def run_calculations(input_data: dict) -> dict:
         except Exception as e:
             results["CompareAmEurError"] = f"{e}\n{traceback.format_exc()}"
 
-    # ---- Arbre Trinomial (DataFrame) ----
+    # ---- Arbre Trinomial DataFrame ----
     if input_data["TreeBol"] and saved_df is not None:
         results["TreeDf"] = saved_df
 

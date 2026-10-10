@@ -32,11 +32,13 @@ class Tree:
         self.time_calculation_tree = 0.00
 
     # ------------------------------------------------------------------
-    def init(self, mkt, params, pricer, IsVega):
+    def init(self, mkt, params, pricer, IsVega, ext=None, binom=None):
+        """ext et binom sont optionnels : si fournis, la convergence les inclut."""
         if pricer.Convergence:
             for T in range(1, pricer.timeSteps + 1):
                 print(f"Calcul du prix pour {T} Time Steps")
-                self.build_tree(mkt, params, pricer, T, pricer.BS_price, True, IsVega)
+                self.build_tree(mkt, params, pricer, T, pricer.BS_price, True, IsVega,
+                                ext=ext, binom=binom)
             self.Convergence_fig = pricer.create_plot_convergence()
         else:
             if pricer.gap != 0:
@@ -67,7 +69,8 @@ class Tree:
             self.Root_Node.Cum_Proba = 1
         self.candidateMid = self.Root_Node
 
-    def build_tree(self, mkt, parameters, pricer, T, BS_Price, condition_Convergence, isVega):
+    def build_tree(self, mkt, parameters, pricer, T, BS_Price,
+                   condition_Convergence, isVega, ext=None, binom=None):
         start_time = time.time()
         self.init_root_node_and_parameters(mkt, parameters, pricer, T)
         for i in range(1, T + 1):
@@ -84,8 +87,34 @@ class Tree:
             pricer.GammaTree = self.Compute_GammaTree(
                 price, self.Root_Node.UpNode.OptPrice,
                 self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
+
         if condition_Convergence:
-            pricer.compute_perf(T, price, time_calculation, BS_Price)
+            mc_price = None
+            binom_price = None
+
+            # MC à T pas de temps (common random numbers)
+            if ext is not None and pricer.MC_condition:
+                saved_ts = pricer.timeSteps
+                saved_mc = pricer.MC_price
+                pricer.timeSteps = T
+                np.random.seed(42)
+                try:
+                    mc_price = float(ext.monte_carlo_price(1500))
+                except Exception:
+                    mc_price = None
+                pricer.timeSteps = saved_ts
+                pricer.MC_price = saved_mc
+
+            # Binomial à T pas de temps
+            if binom is not None and getattr(pricer, 'Binom_condition', False):
+                try:
+                    binom_price = float(binom.price_option(T))
+                except Exception:
+                    binom_price = None
+
+            pricer.compute_perf(T, price, time_calculation, BS_Price,
+                                mc_price=mc_price, binom_price=binom_price)
+
         if not isVega:
             self.display_results(pricer, time_calculation, price,
                                  self.time_calculation_tree, pricer.newTs)
@@ -100,12 +129,10 @@ class Tree:
             self.price_results['BS Price'] = pricer.BS_price
             self.price_results['BS_Time'] = pricer.BS_Time
             self.price_results['TreeGapBS'] = price - pricer.BS_price
-            self.price_results['TreeGapBSTime'] = time_calculation - pricer.BS_Time
         if pricer.MC_condition:
             self.price_results['MC Price'] = pricer.MC_price
             self.price_results['MCTime'] = pricer.MC_Time
             self.price_results['MCGapTree'] = pricer.MC_price - price
-            self.price_results['MCGapTreeTime'] = time_calculation - pricer.MC_Time
         if getattr(pricer, 'Binom_condition', False):
             self.price_results['Binom Price'] = pricer.Binom_price
             self.price_results['Binom_Time'] = pricer.Binom_Time
@@ -308,7 +335,7 @@ class Tree:
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
     # ------------------------------------------------------------------
-    # Strike Study (4 modèles)
+    # Strike Study
     # ------------------------------------------------------------------
     def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
                             binom=None, with_mc=False):
@@ -317,7 +344,7 @@ class Tree:
                    "Binom Price", "Tree-Binom", "Slope Binom",
                    "MC Price", "Tree-MC", "Slope MC"]
 
-        df_strike = pd.DataFrame(0.0, index=range(StrikeSteps), columns=columns)
+        df_strike = pd.DataFrame(0.0, index=range(StrikeSteps + 1), columns=columns)
 
         saved_conv = pricer.Convergence
         saved_tree = pricer.display_tree_bool
@@ -338,8 +365,9 @@ class Tree:
 
         for T in range(1, StrikeSteps + 1):
             params.strike += 1
+            # condition_Convergence=False pour ne pas polluer Convergence_df
             self.build_tree(mkt, params, pricer, pricer.timeSteps,
-                            pricer.BS_price, True, False)
+                            pricer.BS_price, False, True)
             tree_price = self.Root_Node.OptPrice
 
             bs_res = Ext.black_sholes()
@@ -357,7 +385,7 @@ class Tree:
 
             if with_mc:
                 np.random.seed(42)
-                mp = float(Ext.monte_carlo_price(5000))
+                mp = float(Ext.monte_carlo_price(3000))
                 df_strike.at[T, "MC Price"] = mp
                 df_strike.at[T, "Tree-MC"] = tree_price - mp
 
@@ -372,7 +400,7 @@ class Tree:
 
         df_strike = self.compute_slope(df_strike, StrikeSteps)
 
-        # On retire l'index 0 (strike = 0) qui vient de l'initialisation
+        # On ne garde que les lignes valides (1..StrikeSteps)
         df_plot = df_strike.iloc[1:].copy()
 
         return pricer.create_plot_StrikeStudy(
@@ -385,12 +413,13 @@ class Tree:
                        ("Tree Price", "Slope Tree"),
                        ("Binom Price", "Slope Binom"),
                        ("MC Price", "Slope MC")]
-        for T in range(2, StrikeSteps - 1):
+        for T in range(2, StrikeSteps):
             for price_col, slope_col in slope_pairs:
                 if price_col in df_strike.columns:
-                    df_strike.at[T, slope_col] = (
-                        (df_strike.at[T + 1, price_col] - df_strike.at[T - 1, price_col]) /
-                        (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"]))
+                    denom = (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"])
+                    if denom != 0:
+                        df_strike.at[T, slope_col] = (
+                            (df_strike.at[T + 1, price_col] - df_strike.at[T - 1, price_col]) / denom)
         return df_strike
 
     # ------------------------------------------------------------------
