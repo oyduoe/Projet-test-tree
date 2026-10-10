@@ -14,6 +14,7 @@ from Greeks import finite_difference_greeks
 MAX_SVG_DEPTH = 40
 MAX_TS_GREEKS = 200
 MAX_TS_STRIKE_STUDY = 20
+MAX_CONVERGENCE_POINTS = 60
 
 
 class Tree:
@@ -41,8 +42,11 @@ class Tree:
     # ------------------------------------------------------------------
     def init(self, mkt, params, pricer, IsVega, ext=None, binom=None):
         if pricer.Convergence:
-            for T in range(1, pricer.timeSteps + 1):
-                print(f"Calcul du prix pour {T} Time Steps")
+            step_values = self._convergence_steps(pricer.timeSteps,
+                                                   MAX_CONVERGENCE_POINTS)
+            print(f"[Convergence] {len(step_values)} points calculés "
+                  f"(max = {step_values[-1]})")
+            for T in step_values:
                 self.build_tree(mkt, params, pricer, T, pricer.BS_price, True, IsVega,
                                 ext=ext, binom=binom)
             self.Convergence_fig = pricer.create_plot_convergence()
@@ -52,6 +56,23 @@ class Tree:
                 self.build_tree(mkt, params, pricer, pricer.newTs, pricer.BS_price, False, IsVega)
             else:
                 self.build_tree(mkt, params, pricer, pricer.timeSteps, pricer.BS_price, False, IsVega)
+
+    def _convergence_steps(self, max_ts, max_points):
+        """Renvoie une liste de steps à évaluer pour la Convergence.
+
+        - Si max_ts <= max_points : tous les pas.
+        - Sinon : les 20 premiers + des points répartis jusqu'à max_ts.
+        On garde la finesse au début (où la courbe bouge le plus).
+        """
+        if max_ts <= max_points:
+            return list(range(1, max_ts + 1))
+
+        base = list(range(1, 21))  # 1..20
+        remaining = max_ts - 20
+        n_rest = max(1, max_points - 20)
+        rest = sorted(set(int(round(x))
+                          for x in np.linspace(21, max_ts, n_rest)))
+        return sorted(set(base + rest + [max_ts]))
 
     def make_node(self, market_values):
         new_node = Node()
@@ -399,6 +420,12 @@ class Tree:
             columns += ["MC Price", "Tree-MC", "Slope MC"]
 
         df_strike = pd.DataFrame(0.0, index=range(StrikeSteps + 1), columns=columns)
+        # Initialise les slopes à NaN (le premier et le dernier point ne
+        # peuvent pas être calculés par différences centrées, donc on ne
+        # veut pas les tracer comme s'ils valaient 0).
+        for col in df_strike.columns:
+            if col.startswith("Slope "):
+                df_strike[col] = np.nan
 
         saved_conv = pricer.Convergence
         saved_tree = pricer.display_tree_bool
