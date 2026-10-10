@@ -8,6 +8,9 @@ class TreeImage(VectorImage):
     Points clés :
     - On ne parcourt que `max_depth` colonnes (les premières de l'arbre).
       Même pour un arbre à 10 000 pas, la construction reste très rapide.
+    - Colonne 0 = uniquement la racine (les UpNode/DownNode éventuellement
+      attachés à la racine ne font pas partie de l'arbre : ils servent au
+      calcul des Greeks par différences finies sur les 3 nœuds racine).
     - Couleur d'un nœud : dégradé vert selon la proba cumulée, rouge si
       l'une des probabilités de transition est négative.
     - Rayon ∝ sqrt(proba cumulée).
@@ -96,17 +99,33 @@ class TreeImage(VectorImage):
 
     # ------------------------------------------------------------------
     def _collect_columns(self, max_depth):
-        """Parcourt l'arbre colonne par colonne (depuis le mid)."""
+        """Parcourt l'arbre colonne par colonne.
+
+        - Colonne 0 : uniquement la racine (pas de chaîne Up/Down : les
+          UpNode/DownNode de la racine ne sont pas des nœuds de l'arbre,
+          ce sont des artefacts pour le calcul des Greeks).
+        - Colonnes suivantes : chaîne des UpNode au-dessus du mid,
+          chaîne des DownNode en-dessous du mid.
+        """
         columns = []
-        current_node = self.tree.Root_Node
-        if current_node is None:
+        root = self.tree.Root_Node
+        if root is None:
             return columns
 
-        for _ in range(max_depth + 1):
+        # --- Colonne 0 : la racine seule ---
+        columns.append([root])
+
+        # --- Colonnes suivantes : à partir du mid du pas suivant ---
+        current_node = root.Next_Mid
+
+        for _ in range(max_depth):
+            if current_node is None:
+                break
+
             col = []
             mid_node = current_node
 
-            # chaîne des "Up" depuis le mid
+            # chaîne des "Up" depuis le mid (inclut le mid)
             n = mid_node
             while n is not None:
                 col.append(n)
@@ -123,8 +142,6 @@ class TreeImage(VectorImage):
             columns.append(col)
 
             current_node = mid_node.Next_Mid
-            if current_node is None:
-                break
 
         return columns
 
