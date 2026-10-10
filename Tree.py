@@ -11,6 +11,11 @@ from Extension import Extension
 from Greeks import finite_difference_greeks
 
 
+# Profondeur maximale affichée en SVG. Limite la charge mémoire et le
+# temps de rendu même pour des arbres à 10 000 pas.
+MAX_SVG_DEPTH = 40
+
+
 class Tree:
     def __init__(self):
         self.dt: float = 0.0
@@ -28,12 +33,12 @@ class Tree:
         self.nUp: Node = None
         self.nDown: Node = None
         self.df: DataFrame = None
+        self.svg_str: str = None
         self.Convergence_fig = None
         self.time_calculation_tree = 0.00
 
     # ------------------------------------------------------------------
     def init(self, mkt, params, pricer, IsVega, ext=None, binom=None):
-        """ext et binom sont optionnels : si fournis, la convergence les inclut."""
         if pricer.Convergence:
             for T in range(1, pricer.timeSteps + 1):
                 print(f"Calcul du prix pour {T} Time Steps")
@@ -75,12 +80,17 @@ class Tree:
         self.init_root_node_and_parameters(mkt, parameters, pricer, T)
         for i in range(1, T + 1):
             self.build_columns(self.candidateMid, mkt, parameters, i, pricer)
+
+        # ---- SVG : on construit l'arbre AVANT pricing (liens Next_* intacts)
+        # On limite à MAX_SVG_DEPTH pour rester rapide même à 10k pas.
         if pricer.display_tree_bool:
             self.time_calculation_tree = self.display_tree(pricer)
+
         self.candidateMid.price(self.candidateMid, parameters, mkt, self)
         price = self.Root_Node.OptPrice
         end_time = time.time()
         time_calculation = end_time - start_time
+
         if pricer.compute_DeltaAndGamma_tree_var:
             pricer.DeltaTree = self.Compute_DeltaTree(
                 self.Root_Node.UpNode.OptPrice, self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
@@ -91,8 +101,6 @@ class Tree:
         if condition_Convergence:
             mc_price = None
             binom_price = None
-
-            # MC à T pas de temps (common random numbers)
             if ext is not None and pricer.MC_condition:
                 saved_ts = pricer.timeSteps
                 saved_mc = pricer.MC_price
@@ -104,14 +112,11 @@ class Tree:
                     mc_price = None
                 pricer.timeSteps = saved_ts
                 pricer.MC_price = saved_mc
-
-            # Binomial à T pas de temps
             if binom is not None and getattr(pricer, 'Binom_condition', False):
                 try:
                     binom_price = float(binom.price_option(T))
                 except Exception:
                     binom_price = None
-
             pricer.compute_perf(T, price, time_calculation, BS_Price,
                                 mc_price=mc_price, binom_price=binom_price)
 
@@ -335,14 +340,17 @@ class Tree:
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
     # ------------------------------------------------------------------
-    # Strike Study
+    # Strike Study — colonnes conditionnelles
     # ------------------------------------------------------------------
     def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
                             binom=None, with_mc=False):
+        # ---- Colonnes : Tree + BS toujours ; Binom/MC seulement si demandés
         columns = ["Strike", "Tree Price", "BS Price", "Tree-BS",
-                   "Slope BS", "Slope Tree",
-                   "Binom Price", "Tree-Binom", "Slope Binom",
-                   "MC Price", "Tree-MC", "Slope MC"]
+                   "Slope BS", "Slope Tree"]
+        if binom is not None:
+            columns += ["Binom Price", "Tree-Binom", "Slope Binom"]
+        if with_mc:
+            columns += ["MC Price", "Tree-MC", "Slope MC"]
 
         df_strike = pd.DataFrame(0.0, index=range(StrikeSteps + 1), columns=columns)
 
@@ -365,7 +373,6 @@ class Tree:
 
         for T in range(1, StrikeSteps + 1):
             params.strike += 1
-            # condition_Convergence=False pour ne pas polluer Convergence_df
             self.build_tree(mkt, params, pricer, pricer.timeSteps,
                             pricer.BS_price, False, True)
             tree_price = self.Root_Node.OptPrice
@@ -399,8 +406,6 @@ class Tree:
         pricer.Binom_condition = saved_binom
 
         df_strike = self.compute_slope(df_strike, StrikeSteps)
-
-        # On ne garde que les lignes valides (1..StrikeSteps)
         df_plot = df_strike.iloc[1:].copy()
 
         return pricer.create_plot_StrikeStudy(
@@ -415,7 +420,7 @@ class Tree:
                        ("MC Price", "Slope MC")]
         for T in range(2, StrikeSteps):
             for price_col, slope_col in slope_pairs:
-                if price_col in df_strike.columns:
+                if price_col in df_strike.columns and slope_col in df_strike.columns:
                     denom = (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"])
                     if denom != 0:
                         df_strike.at[T, slope_col] = (
@@ -423,30 +428,19 @@ class Tree:
         return df_strike
 
     # ------------------------------------------------------------------
-    def display_tree(self, pricer):
+    # SVG tree — remplace l'ancien DataFrame
+    # ------------------------------------------------------------------
+    def display_tree(self, pricer, max_display_depth=MAX_SVG_DEPTH):
+        """Construit un SVG de l'arbre (limité à max_display_depth colonnes)
+        et stocke la chaîne SVG dans self.svg_str. Renvoie le temps de calcul.
+        """
         start_time_tree = time.time()
-        max_depth = pricer.timeSteps
-        width = max_depth + 1
-        self.df = pd.DataFrame(index=range(2 * max_depth + 1),
-                               columns=range(width), dtype=object)
-        col_center = 0
-        current_node = self.Root_Node
-        for step in range(1, max_depth + 1):
-            if current_node is None:
-                break
-            self.df.iloc[max_depth, col_center] = current_node.Proba_Mid
-            midNode = current_node
-            row = 1
-            while current_node.UpNode is not None:
-                current_node = current_node.UpNode
-                self.df.iloc[max_depth - row, col_center] = current_node.Proba_Mid
-                row += 1
-            current_node = midNode
-            row = 1
-            while current_node.DownNode is not None:
-                current_node = current_node.DownNode
-                self.df.iloc[max_depth + row, col_center] = current_node.Proba_Mid
-                row += 1
-            current_node = midNode.Next_Mid
-            col_center += 1
+        actual_depth = min(max_display_depth, pricer.timeSteps)
+        try:
+            from TreeImage import TreeImage
+            image = TreeImage(self, actual_depth)
+            self.svg_str = image.as_str()
+        except Exception as e:
+            print(f"Erreur génération SVG : {e}")
+            self.svg_str = None
         return time.time() - start_time_tree
