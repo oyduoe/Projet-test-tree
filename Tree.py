@@ -8,109 +8,97 @@ from Market import Market
 from OptionParameters import OptionParameters
 from Pricer import Pricer
 from Extension import Extension
+from Greeks import finite_difference_greeks
 
 
 class Tree:
     def __init__(self):
-        """Initialise les paramètres de l'arbre."""
-        self.dt: float             # Pas de temps
-        self.Alpha: float          # Alpha
-        self.Root_Node: Node       # Noeud de la racine
-        self.Market: Market        # Marché
-        self.candidateMid: Node    # Noeud candidate
-        self.Final_Node: Node      # Noeud final
-        self.tronc: Node           # Tronc de l'arbre
-        self.ModifExMid: Node      # Indicateur de modification
-        self.isTrunc: Node         # Indicateur de tronc
-        self.Convergence_results: DataFrame  # Stocke les résultats de Convergence
-        self.price_results = {}    # Stocke les résultats de prix
-        self.nnext: Node           # Noeud mid tampon pour les prochains noeuds
-        self.nUp: Node             # Noeud supérieur tampon pour les prochains noeuds
-        self.nDown: Node           # Noeud inférieur tampon pour les prochains noeuds
+        self.dt: float
+        self.Alpha: float
+        self.Root_Node: Node
+        self.Market: Market
+        self.candidateMid: Node
+        self.Final_Node: Node
+        self.tronc: Node
+        self.ModifExMid: Node
+        self.isTrunc: Node
+        self.Convergence_results: DataFrame
+        self.price_results = {}
+        self.nnext: Node
+        self.nUp: Node
+        self.nDown: Node
         self.df: DataFrame = None
         self.Convergence_fig = None
-        self.time_calculation_tree = 0.00  # Initialisation à 0 si on n'affiche pas l'arbre
+        self.time_calculation_tree = 0.00
 
     def init(self, mkt: Market, params: OptionParameters, pricer: Pricer, IsVega: bool):
-        """Initialise l'arbre et construit les nœuds."""
-        if pricer.Convergence:  # Si évaluation de Convergence demandée
+        if pricer.Convergence:
             for T in range(1, pricer.timeSteps + 1):
                 print(f"Calcul du prix pour {T} Time Steps")
                 self.build_tree(mkt, params, pricer, T, pricer.BS_price, True, IsVega)
             self.Convergence_fig = pricer.create_plot_convergence()
-        else:  # Appel simple si pas de Convergence
+        else:
             if pricer.gap != 0:
-                pricer.newTs = pricer.compute_time_steps(mkt, params)  # Déterminer les pas de temps
+                pricer.newTs = pricer.compute_time_steps(mkt, params)
                 self.build_tree(mkt, params, pricer, pricer.newTs, pricer.BS_price, False, IsVega)
             else:
                 self.build_tree(mkt, params, pricer, pricer.timeSteps, pricer.BS_price, False, IsVega)
 
     def make_node(self, market_values: float) -> Node:
-        """Crée un nouveau nœud avec la valeur du marché."""
-        new_node = Node()  # Crée une instance de Node
-        new_node.init_node(market_values)  # Initialise le nœud
+        new_node = Node()
+        new_node.init_node(market_values)
         return new_node
 
-    def init_root_node_and_parameters(self, mkt: Market, parameters: OptionParameters,
-                                      pricer: Pricer, T) -> Node:
-        """Initialise le nœud racine et les paramètres."""
-        self.dt = ((parameters.DateMaturity - pricer.PricingDate).days / T) / 365  # Calcul de dt
-        self.Alpha = math.exp(mkt.volatility * math.sqrt(3 * self.dt))  # Calcul d'alpha
-        self.Root_Node = self.make_node(mkt.SpotPrice)  # Initialise le nœud racine avec le prix au comptant
+    def init_root_node_and_parameters(self, mkt, parameters, pricer, T):
+        self.dt = ((parameters.DateMaturity - pricer.PricingDate).days / T) / 365
+        self.Alpha = math.exp(mkt.volatility * math.sqrt(3 * self.dt))
+        self.Root_Node = self.make_node(mkt.SpotPrice)
 
-        if pricer.compute_DeltaAndGamma_tree_var:  # Si on a demandé le calcul du delta et du gamma
-            NodeCalcul = self.make_node(mkt.SpotPrice)  # Nœud sans lien avec l'arbre pour les probabilités de la racine
+        if pricer.compute_DeltaAndGamma_tree_var:
+            NodeCalcul = self.make_node(mkt.SpotPrice)
             NodeCalcul.Next_Mid = self.make_node(NodeCalcul.forward(mkt, self.dt, 0))
             self.compute_proba(NodeCalcul, NodeCalcul.Next_Mid, mkt, 0)
             self.Root_Node.UpNode = self.make_node(mkt.SpotPrice * self.Alpha)
             self.Root_Node.DownNode = self.make_node(mkt.SpotPrice / self.Alpha)
-            # Attribution des probabilités
             self.Root_Node.Cum_Proba = NodeCalcul.Proba_Mid
             self.Root_Node.UpNode.Cum_Proba = NodeCalcul.Proba_Up
             self.Root_Node.DownNode.Cum_Proba = NodeCalcul.Proba_Down
-        else:  # Si on ne veut pas calculer Delta et Gamma
+        else:
             self.Root_Node.Cum_Proba = 1
 
-        self.candidateMid = self.Root_Node  # Commence avec le nœud médian
+        self.candidateMid = self.Root_Node
 
-    def build_tree(self, mkt: Market, parameters: OptionParameters, pricer: Pricer,
-                   T: int, BS_Price: float, condition_Convergence: bool, isVega: bool) -> Node:
-        """Construire l'arbre à partir des paramètres fournis."""
-        start_time = time.time()  # Début du timer
-        self.init_root_node_and_parameters(mkt, parameters, pricer, T)  # Initialisation
+    def build_tree(self, mkt, parameters, pricer, T, BS_Price, condition_Convergence, isVega):
+        start_time = time.time()
+        self.init_root_node_and_parameters(mkt, parameters, pricer, T)
 
-        for i in range(1, T + 1):  # Boucle sur les pas de temps
+        for i in range(1, T + 1):
             self.build_columns(self.candidateMid, mkt, parameters, i, pricer)
 
         if pricer.display_tree_bool:
             self.time_calculation_tree = self.display_tree(pricer)
 
-        # Calculer le prix de l'option
         self.candidateMid.price(self.candidateMid, parameters, mkt, self)
-        price = self.Root_Node.OptPrice  # Sauvegarde du prix
-        end_time = time.time()  # Fin du timer
-        time_calculation = end_time - start_time  # Temps de calcul
+        price = self.Root_Node.OptPrice
+        end_time = time.time()
+        time_calculation = end_time - start_time
 
-        if pricer.compute_DeltaAndGamma_tree_var:  # Si on a demandé le calcul de Delta et Gamma
-            pricer.DeltaTree = self.Compute_DeltaTree(self.Root_Node.UpNode.OptPrice,
-                                                      self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
-            pricer.GammaTree = self.Compute_GammaTree(price, self.Root_Node.UpNode.OptPrice,
-                                                      self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
+        if pricer.compute_DeltaAndGamma_tree_var:
+            pricer.DeltaTree = self.Compute_DeltaTree(
+                self.Root_Node.UpNode.OptPrice,
+                self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
+            pricer.GammaTree = self.Compute_GammaTree(
+                price,
+                self.Root_Node.UpNode.OptPrice,
+                self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
 
-        # ---- CORRECTION ----
-        # On stocke les résultats à chaque itération (le dernier écrase le précédent).
-        # Ainsi, même en mode Convergence, les résultats finaux (BS, MC, Delta, Gamma,
-        # Vega, prix de l'arbre) sont bien récupérés.
         if condition_Convergence:
             pricer.compute_perf(T, price, time_calculation, BS_Price)
         if not isVega:
             self.display_results(pricer, time_calculation, price,
                                  self.time_calculation_tree, pricer.newTs)
-        # --------------------
 
-    def display_results(self, pricer: Pricer, time_calculation: float,
-                        price: float, time_calculation_tree: float, newTs: int):
-        """Affiche les résultats des prix."""
+    def display_results(self, pricer, time_calculation, price, time_calculation_tree, newTs):
         self.price_results = {
             'TreePrice': price,
             'TimePricing': time_calculation,
@@ -132,63 +120,84 @@ class Tree:
             self.price_results['MCGapTree'] = pricer.MC_price - price
             self.price_results['MCGapTreeTime'] = time_calculation - pricer.MC_Time
 
-    def build_triple(self, candidateMid: Node, mkt: Market, div: float):
-        """Méthode permettant la création du tronc à chaque pas de temps."""
-        prix_forward = candidateMid.forward(mkt, self.dt, div)  # Calcul du prix forward
-        self.build_mid(candidateMid, prix_forward, mkt, div)  # Création du next mid du tronc
-        self.link_and_new_node(prix_forward * self.Alpha, candidateMid, self.nnext, True)  # Création du noeud Up
-        self.link_and_new_node(prix_forward / self.Alpha, candidateMid, self.nnext, False)  # Création du noeud Down
+        if getattr(pricer, 'Binom_condition', False):
+            self.price_results['Binom Price'] = pricer.Binom_price
+            self.price_results['Binom_Time'] = pricer.Binom_Time
+            self.price_results['TreeGapBinom'] = price - pricer.Binom_price
+            self.price_results['TreeGapBinomTime'] = time_calculation - pricer.Binom_Time
 
-    def build_mid(self, candidateMid: Node, prix_forward: float, mkt: Market, div: float):
-        """Méthode créant le prochain milieu du tronc."""
-        self.nnext = self.make_node(prix_forward)  # Création du noeud avec le prix forward
-        candidateMid.Next_Mid = self.nnext  # Attribution du next_mid
-        self.nnext.nprec = candidateMid  # Lien en arrière pour le calcul du prix
+    # ------------------------------------------------------------------
+    # Greeks Trinomiales (par différences finies)
+    # ------------------------------------------------------------------
+    def compute_greeks_tree(self, params, pricer, mkt):
+        def price_fn(m, p, pr):
+            saved = (pr.Convergence, pr.display_tree_bool, pr.BS_condition,
+                     pr.MC_condition, pr.compute_DeltaAndGamma_tree_var,
+                     getattr(pr, 'Binom_condition', False))
+            pr.Convergence = False
+            pr.display_tree_bool = False
+            pr.BS_condition = False
+            pr.MC_condition = False
+            pr.compute_DeltaAndGamma_tree_var = False
+            if hasattr(pr, 'Binom_condition'):
+                pr.Binom_condition = False
+            self.init(m, p, pr, True)
+            price = self.Root_Node.OptPrice
+            (pr.Convergence, pr.display_tree_bool, pr.BS_condition,
+             pr.MC_condition, pr.compute_DeltaAndGamma_tree_var,
+             bc) = saved
+            if hasattr(pr, 'Binom_condition'):
+                pr.Binom_condition = bc
+            return price
+
+        return finite_difference_greeks(price_fn, mkt, params, pricer)
+
+    # ------------------------------------------------------------------
+    # Méthodes internes de construction (inchangées)
+    # ------------------------------------------------------------------
+    def build_triple(self, candidateMid, mkt, div):
+        prix_forward = candidateMid.forward(mkt, self.dt, div)
+        self.build_mid(candidateMid, prix_forward, mkt, div)
+        self.link_and_new_node(prix_forward * self.Alpha, candidateMid, self.nnext, True)
+        self.link_and_new_node(prix_forward / self.Alpha, candidateMid, self.nnext, False)
+
+    def build_mid(self, candidateMid, prix_forward, mkt, div):
+        self.nnext = self.make_node(prix_forward)
+        candidateMid.Next_Mid = self.nnext
+        self.nnext.nprec = candidateMid
         self.compute_proba(candidateMid, self.nnext, mkt, div)
         candidateMid.Next_Mid.Cum_Proba = candidateMid.Cum_Proba * candidateMid.Proba_Mid
 
-    def link_and_new_node(self, prix: float, candidateMid: Node, nnext: Node, upper: bool):
-        """Méthode construisant les nouveaux up et down du tronc."""
-        newnode = self.make_node(prix)  # Création du nouveau noeud
-
-        if upper:  # Partie supérieure de l'arbre
+    def link_and_new_node(self, prix, candidateMid, nnext, upper):
+        newnode = self.make_node(prix)
+        if upper:
             newnode.Cum_Proba = candidateMid.Cum_Proba * candidateMid.Proba_Up
             newnode.DownNode = nnext
             nnext.UpNode = newnode
             candidateMid.Next_Up = newnode
             self.nUp = newnode
-        else:  # Partie inférieure de l'arbre
+        else:
             newnode.Cum_Proba = candidateMid.Cum_Proba * candidateMid.Proba_Down
             newnode.UpNode = nnext
             nnext.DownNode = newnode
             candidateMid.Next_Down = newnode
             self.nDown = newnode
 
-    def build_columns(self, candidateMid: Node, mkt: Market,
-                      parameters: OptionParameters, i: int, pricer: Pricer):
-        """Méthode construisant les colonnes pour chaque pas de temps."""
-        div = mkt.compute_dividend(i, self.dt)  # Initialisation du dividende
-
-        # Création du nœud médian pour ce pas de temps
+    def build_columns(self, candidateMid, mkt, parameters, i, pricer):
+        div = mkt.compute_dividend(i, self.dt)
         self.isTrunc = True
-        self.build_triple(candidateMid, mkt, div)  # Création des trois nœuds
-        self.tronc = candidateMid  # Garder un nœud pointé sur le tronc
-
-        # Construction des noeuds Up
+        self.build_triple(candidateMid, mkt, div)
+        self.tronc = candidateMid
         self.build_up_and_down(candidateMid, mkt, parameters, pricer, div, "up")
-
-        if not self.isTrunc:  # Vérification de la création de nœuds supérieurs
+        if not self.isTrunc:
             self.nUp = candidateMid.Next_Up
             self.nnext = candidateMid.Next_Mid
             self.nDown = candidateMid.Next_Down
             self.build_up_and_down(candidateMid, mkt, parameters, pricer, div, "down")
+        candidateMid = self.tronc
+        self.candidateMid = candidateMid.Next_Mid
 
-        candidateMid = self.tronc  # On se replace au mid
-        self.candidateMid = candidateMid.Next_Mid  # Décalage pour le pas de temps suivant
-
-    def build_up_and_down(self, candidateMid: Node, mkt: Market, parameters: OptionParameters,
-                          pricer: Pricer, div: float, direction: str):
-        """Méthode qui gère l'appel des fonctions de création des nœuds up et down."""
+    def build_up_and_down(self, candidateMid, mkt, parameters, pricer, div, direction):
         if direction == "up":
             while candidateMid.UpNode is not None:
                 self.isTrunc = False
@@ -199,12 +208,9 @@ class Tree:
                 self.next_forward(candidateMid.DownNode, mkt, parameters, pricer, direction, div)
                 candidateMid = candidateMid.DownNode
 
-    def next_forward(self, candidateMid: Node, mkt: Market, parameters: OptionParameters,
-                     pricer: Pricer, direction: str, div: float):
-        """Méthode calculant le forward pour les nœuds up et down en construction."""
+    def next_forward(self, candidateMid, mkt, parameters, pricer, direction, div):
         isUp = (direction == "up")
-
-        if candidateMid.Cum_Proba > pricer.PruningTreshold:  # Prunning de l'arbre
+        if candidateMid.Cum_Proba > pricer.PruningTreshold:
             self.ModifExMid = False
             self.chek_and_link(candidateMid, mkt, direction, div, isUp, False)
             self.compute_and_allocating_probas(candidateMid, mkt, div, isUp)
@@ -212,9 +218,7 @@ class Tree:
         else:
             self.chek_and_link(candidateMid, mkt, direction, div, isUp, True)
 
-    def chek_and_link(self, candidateMid: Node, mkt: Market, direction: str, div: float,
-                      isUp: bool, isprunne: bool):
-        """Méthode qui vérifie le Mid en cas de dividendes, sinon lie les nœuds normalement."""
+    def chek_and_link(self, candidateMid, mkt, direction, div, isUp, isprunne):
         if isUp:
             if div != 0:
                 self.controle_next_mid(candidateMid, self.nUp, direction, mkt, div)
@@ -234,9 +238,7 @@ class Tree:
                 candidateMid.Next_Mid = self.nDown
                 candidateMid.Proba_Mid = 1
 
-    def compute_and_allocating_probas(self, candidateMid: Node, mkt: Market,
-                                      div: float, isUp: bool):
-        """Méthode calculant les probabilités et allouant également pour les nœuds ayant plusieurs chemins."""
+    def compute_and_allocating_probas(self, candidateMid, mkt, div, isUp):
         self.compute_proba(candidateMid, candidateMid.Next_Mid, mkt, div)
         candidateMid.Next_Mid.Cum_Proba += candidateMid.Cum_Proba * candidateMid.Proba_Mid
         if isUp:
@@ -244,8 +246,7 @@ class Tree:
         else:
             candidateMid.Next_Up.Cum_Proba += candidateMid.Cum_Proba * candidateMid.Proba_Up
 
-    def compute_transition_up_node(self, newnode: Node, ModifExMid: bool, IsDiveTime: bool):
-        """Méthode modifiant les variables de transition pour le prochain nœud à créer."""
+    def compute_transition_up_node(self, newnode, ModifExMid, IsDiveTime):
         if IsDiveTime:
             self.nnext = newnode
             self.nDown = self.nUp
@@ -257,8 +258,7 @@ class Tree:
         elif ModifExMid:
             self.nUp = newnode
 
-    def compute_transition_down_node(self, newnode: Node, ModifExMid: bool, IsDiveTime: bool):
-        """Méthode modifiant les variables de transition pour le prochain nœud à créer."""
+    def compute_transition_down_node(self, newnode, ModifExMid, IsDiveTime):
         if IsDiveTime:
             self.nnext = newnode
             self.nUp = self.nDown
@@ -270,8 +270,7 @@ class Tree:
         elif ModifExMid:
             self.nDown = newnode
 
-    def build_up(self, candidate_mid: Node, is_dive_time: bool):
-        """Méthode qui gère la création de noeud up."""
+    def build_up(self, candidate_mid, is_dive_time):
         newnode = self.make_node(self.nUp.UndPrice * self.Alpha)
         if is_dive_time:
             candidate_mid.Next_Mid = newnode
@@ -282,11 +281,9 @@ class Tree:
             candidate_mid.Next_Up = newnode
             candidate_mid.Next_Mid.UpNode = newnode
             candidate_mid.Next_Up.DownNode = self.nUp
-
         self.compute_transition_up_node(newnode, self.ModifExMid, is_dive_time)
 
-    def build_down(self, candidate_mid: Node, is_dive_time: bool):
-        """Méthode qui gère la création de noeud down."""
+    def build_down(self, candidate_mid, is_dive_time):
         newnode = self.make_node(self.nDown.UndPrice / self.Alpha)
         if is_dive_time:
             candidate_mid.Next_Mid = newnode
@@ -297,147 +294,142 @@ class Tree:
             candidate_mid.Next_Down = newnode
             candidate_mid.Next_Mid.DownNode = newnode
             candidate_mid.Next_Down.UpNode = self.nDown
-
         self.compute_transition_down_node(newnode, self.ModifExMid, is_dive_time)
 
-    def new_and_link(self, candidate_mid: Node, direction: str, is_dive_time: bool):
-        """Méthode créant les nouveaux nœuds Up ou Down."""
+    def new_and_link(self, candidate_mid, direction, is_dive_time):
         is_up = (direction == "up")
-
         if is_up:
             self.build_up(candidate_mid, is_dive_time)
         else:
             self.build_down(candidate_mid, is_dive_time)
-
         if not is_dive_time:
             if is_up:
                 candidate_mid.Next_Up.Cum_Proba = candidate_mid.Cum_Proba * candidate_mid.Proba_Up
             else:
                 candidate_mid.Next_Down.Cum_Proba = candidate_mid.Cum_Proba * candidate_mid.Proba_Down
 
-    def controle_next_mid(self, candidate_mid: Node, potential_mid: Node,
-                          direction: str, mkt: Market, div: float):
-        """Méthode qui contrôle si le forward créé avec le tronc correspond pour le up ou le down."""
+    def controle_next_mid(self, candidate_mid, potential_mid, direction, mkt, div):
         fwd = candidate_mid.forward(mkt, self.dt, div)
         if (fwd < (potential_mid.UndPrice * (1 + (1 / self.Alpha))) / 2
                 or fwd > (potential_mid.UndPrice * (1 + self.Alpha)) / 2):
             self.new_and_link(candidate_mid, direction, True)
             self.ModifExMid = True
 
-    def compute_proba(self, candidateMid: Node, nnext: Node, mkt: Market, div: float):
-        """Méthode de calcul des probabilités."""
+    def compute_proba(self, candidateMid, nnext, mkt, div):
         esperance = candidateMid.UndPrice * np.exp(mkt.RiskFree * self.dt) - div
         variance = (candidateMid.UndPrice ** 2) * np.exp(2 * mkt.RiskFree * self.dt) * (
                 np.exp(mkt.volatility ** 2 * self.dt) - 1)
-
         candidateMid.Proba_Down = ((nnext.UndPrice ** -2 * (variance + esperance ** 2) - 1 -
-                                   (self.Alpha + 1) * (nnext.UndPrice ** -1 * esperance - 1)) /
+                                    (self.Alpha + 1) * (nnext.UndPrice ** -1 * esperance - 1)) /
                                    ((1 - self.Alpha) * (self.Alpha ** -2 - 1)))
-        candidateMid.Proba_Up = (nnext.UndPrice ** -1 * esperance - 1 - (self.Alpha ** -1 - 1) *
-                                 candidateMid.Proba_Down) / (self.Alpha - 1)
+        candidateMid.Proba_Up = (nnext.UndPrice ** -1 * esperance - 1 -
+                                 (self.Alpha ** -1 - 1) * candidateMid.Proba_Down) / (self.Alpha - 1)
         candidateMid.Proba_Mid = 1 - candidateMid.Proba_Down - candidateMid.Proba_Up
         if candidateMid.Proba_Down < 0 or candidateMid.Proba_Up < 0 or candidateMid.Proba_Mid < 0:
             print("Probabilités négatives détectées")
 
-    def Compute_DeltaTree(self, P1: float, P_1: float, S0: float):
-        """Méthode de calcul du delta de l'option avec le pricing trinomial."""
+    def Compute_DeltaTree(self, P1, P_1, S0):
         return (P1 - P_1) / ((self.Alpha * S0) - (S0 / self.Alpha))
 
-    def Compute_GammaTree(self, P: float, P1: float, P_1: float, S0: float):
-        """Méthode de calcul du gamma de l'option avec le pricing trinomial."""
-        return ((((P1 - P) / ((self.Alpha * S0) - S0)) - ((P - P_1) / (S0 - (S0 / self.Alpha))))
+    def Compute_GammaTree(self, P, P1, P_1, S0):
+        return ((((P1 - P) / ((self.Alpha * S0) - S0)) -
+                 ((P - P_1) / (S0 - (S0 / self.Alpha))))
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
-    def compute_vega_tree(self, params: OptionParameters, pricer: Pricer, mkt: Market):
-        """Méthode de calcul du vega de l'option avec le pricing trinomial."""
+    # ------------------------------------------------------------------
+    # Strike Study enrichi
+    # ------------------------------------------------------------------
+    def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
+                            binom=None, with_mc=False):
+        columns = ["Strike", "Tree Price", "BS Price", "Tree-BS",
+                   "Slope BS", "Slope Tree"]
+        if binom is not None:
+            columns += ["Binom Price", "Tree-Binom", "Slope Binom"]
+        if with_mc:
+            columns += ["MC Price", "Tree-MC", "Slope MC"]
+
+        df_strike = pd.DataFrame(0.0, index=range(StrikeSteps), columns=columns)
+
+        saved_conv = pricer.Convergence
+        saved_tree = pricer.display_tree_bool
         pricer.Convergence = False
         pricer.display_tree_bool = False
-        pricer.BS_condition = False
-        pricer.MC_condition = False
-        pricer.compute_DeltaAndGamma_tree_var = False
-        original_volatility = mkt.volatility
-        mkt.volatility = original_volatility + 0.01  # Augmenter la volatilité
-        self.init(mkt, params, pricer, True)
-        price_u = self.Root_Node.OptPrice
 
-        mkt.volatility = original_volatility - 0.01  # Diminuer la volatilité
-        self.init(mkt, params, pricer, True)
-        price_d = self.Root_Node.OptPrice
-        mkt.volatility = original_volatility
-
-        return (price_u - price_d) / 2
-
-    def compute_StrikeStudy(self, StrikeSteps: int, mkt: Market, pricer: Pricer,
-                            params: OptionParameters, Extension: Extension):
-        """Méthode de calcul de l'analyse du prix par rapport au strike."""
-        df_strike = pd.DataFrame(0.0, index=range(StrikeSteps),
-                                 columns=["Strike", "Tree Price", "BS Price", "Tree-BS", "Slope BS", "Slope Tree"])
-        pricer.Convergence = False
-        pricer.display_tree_bool = False
         params.strike = params.strike - 5
         for T in range(1, StrikeSteps + 1):
             params.strike += 1
-            self.build_tree(mkt, params, pricer, pricer.timeSteps, pricer.BS_price, True, False)
+            self.build_tree(mkt, params, pricer, pricer.timeSteps,
+                            pricer.BS_price, True, False)
+            tree_price = self.Root_Node.OptPrice
 
-            Tree_price = self.Root_Node.OptPrice
-            BS_Result = Extension.black_sholes()
-            BS_Price = BS_Result["BS Price"]
+            bs_res = Ext.black_sholes()
+            bs_price = bs_res["BS Price"]
+
             df_strike.at[T, "Strike"] = params.strike
-            df_strike.at[T, "Tree Price"] = Tree_price
-            df_strike.at[T, "BS Price"] = BS_Price
-            df_strike.at[T, "Tree-BS"] = Tree_price - BS_Price
-        df_strike = self.compute_slope(df_strike, StrikeSteps)
-        df_strike_fig = pricer.create_plot_StrikeStudy(
-            df_strike, df_strike.at[2, "Strike"], df_strike.at[T, "Strike"])
-        return df_strike_fig
+            df_strike.at[T, "Tree Price"] = tree_price
+            df_strike.at[T, "BS Price"] = bs_price
+            df_strike.at[T, "Tree-BS"] = tree_price - bs_price
 
-    def compute_slope(self, df_strike: DataFrame, StrikeSteps: int) -> DataFrame:
-        """Méthode de calcul de la slope."""
+            if binom is not None:
+                bp = binom.price_option(pricer.timeSteps)
+                df_strike.at[T, "Binom Price"] = bp
+                df_strike.at[T, "Tree-Binom"] = tree_price - bp
+
+            if with_mc:
+                np.random.seed(42)
+                mp = Ext.monte_carlo_price(5000)
+                df_strike.at[T, "MC Price"] = mp
+                df_strike.at[T, "Tree-MC"] = tree_price - mp
+
+        pricer.Convergence = saved_conv
+        pricer.display_tree_bool = saved_tree
+
+        df_strike = self.compute_slope(df_strike, StrikeSteps)
+        return pricer.create_plot_StrikeStudy(
+            df_strike,
+            df_strike.at[2, "Strike"],
+            df_strike.at[T, "Strike"])
+
+    def compute_slope(self, df_strike, StrikeSteps):
+        slope_pairs = [("BS Price", "Slope BS"),
+                       ("Tree Price", "Slope Tree"),
+                       ("Binom Price", "Slope Binom"),
+                       ("MC Price", "Slope MC")]
         for T in range(2, StrikeSteps):
-            df_strike.at[T, "Slope BS"] = ((df_strike.at[T + 1, "BS Price"] - df_strike.at[T - 1, "BS Price"]) /
-                                           (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"]))
-            df_strike.at[T, "Slope Tree"] = ((df_strike.at[T + 1, "Tree Price"] - df_strike.at[T - 1, "Tree Price"]) /
-                                             (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"]))
+            for price_col, slope_col in slope_pairs:
+                if price_col in df_strike.columns and slope_col in df_strike.columns:
+                    df_strike.at[T, slope_col] = (
+                        (df_strike.at[T + 1, price_col] - df_strike.at[T - 1, price_col]) /
+                        (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"]))
         return df_strike
 
-    def display_tree(self, pricer: Pricer) -> float:
-        """Construit le DataFrame de l'arbre (probabilités) et renvoie le temps de construction."""
-        start_time_tree = time.time()  # Début du timer
-        max_depth = pricer.timeSteps  # Nombre maximal de pas de temps
-        width = max_depth + 1  # Largeur du DataFrame (nombre de colonnes)
-
-        # dtype=object pour accepter des valeurs mixtes (str/float/None)
+    # ------------------------------------------------------------------
+    def display_tree(self, pricer):
+        start_time_tree = time.time()
+        max_depth = pricer.timeSteps
+        width = max_depth + 1
         self.df = pd.DataFrame(index=range(2 * max_depth + 1),
-                               columns=range(width),
-                               dtype=object)
-
-        # Initialiser la position de la racine
+                               columns=range(width), dtype=object)
         col_center = 0
         current_node = self.Root_Node
 
-        for step in range(1, max_depth + 1):  # Boucle pour avancer dans les colonnes (par pas de temps)
+        for step in range(1, max_depth + 1):
             if current_node is None:
                 break
-
-            self.df.iloc[max_depth, col_center] = current_node.Proba_Mid  # On inscrit le mid
+            self.df.iloc[max_depth, col_center] = current_node.Proba_Mid
             midNode = current_node
             row = 1
-
-            while current_node.UpNode is not None:  # Boucle pour inscrire toutes les valeurs up
+            while current_node.UpNode is not None:
                 current_node = current_node.UpNode
                 self.df.iloc[max_depth - row, col_center] = current_node.Proba_Mid
                 row += 1
-
             current_node = midNode
             row = 1
-
-            while current_node.DownNode is not None:  # Boucle pour inscrire toutes les valeurs down
+            while current_node.DownNode is not None:
                 current_node = current_node.DownNode
                 self.df.iloc[max_depth + row, col_center] = current_node.Proba_Mid
                 row += 1
-
-            current_node = midNode.Next_Mid  # On se replace au mid et on avance d'un pas de temps
+            current_node = midNode.Next_Mid
             col_center += 1
 
-        end_time_tree = time.time()  # Fin du timer
-        return end_time_tree - start_time_tree  # Temps de construction
+        return time.time() - start_time_tree

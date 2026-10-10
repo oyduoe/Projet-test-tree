@@ -1,0 +1,57 @@
+import math
+import numpy as np
+
+
+class Binomial:
+    """Pricer Binomial CRR (Cox-Ross-Rubinstein).
+
+    Note : les dividendes discrets ne sont pas gérés dans cette version
+    (les modèles Binomial et Trinomial peuvent donc diverger légèrement
+    quand un dividende est présent).
+    """
+
+    def __init__(self, mkt, params, pricer):
+        self.market = mkt
+        self.params = params
+        self.pricer = pricer
+        self.price = 0.0
+
+    def price_option(self, n_steps=None) -> float:
+        if n_steps is None:
+            n_steps = self.pricer.timeSteps
+        n_steps = max(int(n_steps), 1)
+
+        S0 = self.market.SpotPrice
+        K = self.params.strike
+        r = self.market.RiskFree
+        sigma = self.market.volatility
+        T = (self.params.DateMaturity - self.pricer.PricingDate).days / 365.0
+
+        if T <= 0:
+            self.price = self.params.Vi(S0)
+            return self.price
+
+        dt = T / n_steps
+        u = math.exp(sigma * math.sqrt(dt))
+        d = 1.0 / u
+        p = (math.exp(r * dt) - d) / (u - d)
+        disc = math.exp(-r * dt)
+
+        is_american = (self.params.Exercice == "American")
+
+        # Valeurs terminales (j = 0 → u^N, j = N → d^N)
+        values = np.empty(n_steps + 1, dtype=float)
+        for j in range(n_steps + 1):
+            S = S0 * (u ** (n_steps - j)) * (d ** j)
+            values[j] = self.params.Vi(S)
+
+        # Backward induction
+        for i in range(n_steps - 1, -1, -1):
+            for j in range(i + 1):
+                values[j] = disc * (p * values[j] + (1 - p) * values[j + 1])
+                if is_american:
+                    S = S0 * (u ** (i - j)) * (d ** j)
+                    values[j] = max(values[j], self.params.Vi(S))
+
+        self.price = float(values[0])
+        return self.price
