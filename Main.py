@@ -15,6 +15,13 @@ from Binomial import Binomial
 from Greeks import finite_difference_greeks
 
 
+# Ts utilisés dans les extensions (comparatifs, greeks, strike study).
+# Les comparatifs n'ont pas besoin du Ts utilisateur : Ts=200 suffit
+# pour que Trinomial ≈ BS à ~1e-4, et ça évite de faire 24 arbres à 1000 pas.
+MAX_TS_GREEKS = 200
+MAX_TS_EXTENSION = 200
+
+
 # ======================================================================
 # COMPARATIFS
 # ======================================================================
@@ -104,9 +111,12 @@ def _compare_prices_vs_steps(input_data, step_list=(5, 10, 20, 40, 80)):
 
 
 def _compare_american_european(input_data):
-    """Gap American - European : uniquement Tree et Binomial."""
+    """Gap American - European : uniquement Tree et Binomial, Ts capé."""
+    ts_cap = min(int(input_data["Ts"]), MAX_TS_EXTENSION)
+
     def price_one(exercise):
         local = dict(input_data)
+        local["Ts"] = ts_cap
         local["Exercice"] = exercise
         local["Convergence"] = False
         local["StrikeStudy"] = False
@@ -141,7 +151,7 @@ def _compare_american_european(input_data):
     bars = ax.bar(models, gaps, color=['orange', 'blue'])
     ax.axhline(0, color='black', linewidth=0.5)
     ax.set_ylabel("Prix American - Prix European")
-    ax.set_title("Gap American vs European (modèles avec exercice anticipé)")
+    ax.set_title(f"Gap American vs European (Ts = {ts_cap})")
     ax.grid(True, axis='y')
     for b, g in zip(bars, gaps):
         ax.text(b.get_x() + b.get_width() / 2, g, f"{g:.4f}",
@@ -153,15 +163,8 @@ def _compare_american_european(input_data):
 def _compare_dividend_modes(input_data, n_points=12):
     """Un seul graphe : Discrete vs Continuous par modèle actif.
 
-    - Tree + BS : toujours
-    - Binomial : si BinomCondition
-    - Monte Carlo : si MCCondition
-
-    Chaque modèle a DEUX courbes :
-        - ligne pleine      = Discrete (cash)
-        - ligne pointillée  = Continuous (yield q=D/S)
-
-    Renvoie None si Dividend <= 0.
+    IMPORTANT : tous les modèles sont calculés à Ts capé (MAX_TS_EXTENSION)
+    car refaire 12 × 2 arbres à Ts=1000 prendrait plus de 10 minutes.
     """
     D = float(input_data.get("Dividend", 0.0))
     if D <= 0:
@@ -175,6 +178,8 @@ def _compare_dividend_modes(input_data, n_points=12):
     total_days = (MD - PD).days
     if total_days <= 0:
         return None
+
+    ts_cap = min(int(input_data["Ts"]), MAX_TS_EXTENSION)
 
     fractions = np.linspace(0.05, 0.95, n_points)
     ex_days = [max(1, int(round(f * total_days))) for f in fractions]
@@ -216,6 +221,7 @@ def _compare_dividend_modes(input_data, n_points=12):
     for d in ex_days:
         for mode in ("Discrete", "Continuous"):
             local = dict(input_data)
+            local["Ts"] = ts_cap
             local["DivExDate"] = PD + timedelta(days=d)
             local["DividendType"] = mode
             local["Convergence"] = False
@@ -232,6 +238,7 @@ def _compare_dividend_modes(input_data, n_points=12):
 
     # Référence sans dividende
     local0 = dict(input_data)
+    local0["Ts"] = ts_cap
     local0["Dividend"] = 0.0
     local0["Convergence"] = False
     local0["StrikeStudy"] = False
@@ -241,7 +248,6 @@ def _compare_dividend_modes(input_data, n_points=12):
     local0["CompareDivModes"] = False
     refs = _price_all(local0)
 
-    # ---------- Un seul graphe ----------
     style = {
         "Trinomial":     ('orange', 'o'),
         "Black-Scholes": ('green',  '^'),
@@ -262,7 +268,7 @@ def _compare_dividend_modes(input_data, n_points=12):
 
     ax.set_xlabel("Ex-dividend date (days from pricing date)")
     ax.set_ylabel("Option price")
-    ax.set_title(f"Discrete vs Continuous dividend — D = {D:.2f} EUR")
+    ax.set_title(f"Discrete vs Continuous dividend — D = {D:.2f} EUR (Ts = {ts_cap})")
     ax.grid(True)
     ax.legend(loc='best', fontsize=8, ncol=2)
     plt.tight_layout()
@@ -306,7 +312,7 @@ def run_calculations(input_data: dict) -> dict:
         pricer.Binom_Time = time.time() - t0
         pricer.Binom_price = float(binom.price)
 
-    # ---- Arbre principal ----
+    # ---- Arbre principal (Ts utilisateur) ----
     arbre = Tree()
     if input_data["Convergence"]:
         arbre.init(mkt, params, pricer, False, ext=Ext, binom=binom)
@@ -332,8 +338,7 @@ def run_calculations(input_data: dict) -> dict:
     if input_data["Convergence"]:
         results["ConvergenceFig"] = arbre.Convergence_fig
 
-    # ---- Greeks ----
-    # Tree : limité à 200 pas en interne (les Greeks convergent bien avant)
+    # ---- Greeks (Ts limité à 200 en interne) ----
     t0 = time.time()
     pricer.greeks_tree = arbre.compute_greeks_tree(params, pricer, mkt)
     pricer.Tree_Greeks_Time = pricing_time_tree + (time.time() - t0)
@@ -344,7 +349,6 @@ def run_calculations(input_data: dict) -> dict:
 
     if binom_checked:
         saved_ts_binom = pricer.timeSteps
-        MAX_TS_GREEKS = 200
         if saved_ts_binom > MAX_TS_GREEKS:
             pricer.timeSteps = MAX_TS_GREEKS
         try:
@@ -375,7 +379,7 @@ def run_calculations(input_data: dict) -> dict:
     results["greeks_mc"] = pricer.greeks_mc
     results["greeks_binom"] = pricer.greeks_binom
 
-    # ---- Strike Study ----
+    # ---- Strike Study (Ts limité à 20 pour lisibilité) ----
     if input_data["StrikeStudy"]:
         try:
             fig = arbre.compute_StrikeStudy(
@@ -386,7 +390,7 @@ def run_calculations(input_data: dict) -> dict:
         except Exception as e:
             results["StrikeStudyError"] = f"{e}\n{traceback.format_exc()}"
 
-    # ---- Comparatifs ----
+    # ---- Comparatifs (Ts capé à 200 en interne) ----
     if input_data.get("ComparePricesSteps", False):
         try:
             results["ComparePricesSteps"] = _compare_prices_vs_steps(input_data)

@@ -87,14 +87,9 @@ class Pricer:
         return fig
 
     # ------------------------------------------------------------------
-    # Strike Study — refait pour coller à la référence
+    # Strike Study — gaps sur l'axe droit, prix sur l'axe gauche
     # ------------------------------------------------------------------
     def create_plot_StrikeStudy(self, df_strike, initial_strike, final_strike):
-        """Un seul graphe avec deux échelles.
-
-        - Axe GAUCHE : prix (BS, Tree, + Binom/MC si activés)
-        - Axe DROIT  : gaps (Tree - BS, Tree - Binom, Tree - MC) et slopes
-        """
         fig, ax1 = plt.subplots(figsize=(12, 6))
 
         # ---- Axe GAUCHE : prix seulement ----
@@ -115,20 +110,18 @@ class Pricer:
         ax1.tick_params(axis='y', labelcolor='blue')
         ax1.grid(True)
 
-        # ---- Axe DROIT : gaps + slopes ----
+        # ---- Axe DROIT : gaps ET slopes ----
         ax2 = ax1.twinx()
 
-        # Gaps (lignes pleines)
         ax2.plot(df_strike["Strike"].astype(float), df_strike["Tree-BS"].astype(float),
                  label="Tree - BS", color='red', linestyle='-')
-        if "Tree-Binom" in df_strike.columns:
+        if "Tree-Binom" in df_strike.columns and df_strike["Tree-Binom"].astype(float).abs().sum() > 0:
             ax2.plot(df_strike["Strike"].astype(float), df_strike["Tree-Binom"].astype(float),
                      label="Tree - Binom", color='darkorange', linestyle='-')
-        if "Tree-MC" in df_strike.columns:
+        if "Tree-MC" in df_strike.columns and df_strike["Tree-MC"].astype(float).abs().sum() > 0:
             ax2.plot(df_strike["Strike"].astype(float), df_strike["Tree-MC"].astype(float),
                      label="Tree - MC", color='magenta', linestyle='-')
 
-        # Slopes (lignes pointillées) — même couleur que le prix correspondant
         for col, lbl, c in [("Slope BS", "Slope BS", 'green'),
                             ("Slope Tree", "Slope Tree", 'orange'),
                             ("Slope Binom", "Slope Binom", 'blue'),
@@ -142,7 +135,6 @@ class Pricer:
         ax2.set_ylabel('Gaps & Slopes', color='purple')
         ax2.tick_params(axis='y', labelcolor='purple')
 
-        # Légende combinée
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
         ax1.legend(lines1 + lines2, labels1 + labels2,

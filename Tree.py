@@ -75,7 +75,6 @@ class Tree:
             self.Root_Node.Cum_Proba = 1
         self.candidateMid = self.Root_Node
 
-    # ------------------------------------------------------------------
     def _snapshot_tree(self, max_depth):
         root = self.Root_Node
         if root is None:
@@ -102,7 +101,6 @@ class Tree:
             current = nxt
         return {"columns": columns, "edges": edges}
 
-    # ------------------------------------------------------------------
     def build_tree(self, mkt, parameters, pricer, T, BS_Price,
                    condition_Convergence, isVega, ext=None, binom=None):
         start_time = time.time()
@@ -175,8 +173,6 @@ class Tree:
             self.price_results['Binom_Time'] = pricer.Binom_Time
             self.price_results['TreeGapBinom'] = price - pricer.Binom_price
 
-    # ------------------------------------------------------------------
-    # Greeks : limité à MAX_TS_GREEKS pas pour rester rapide
     # ------------------------------------------------------------------
     def compute_greeks_tree(self, params, pricer, mkt):
         saved_ts = pricer.timeSteps
@@ -393,8 +389,6 @@ class Tree:
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
     # ------------------------------------------------------------------
-    # Strike Study — Ts limité à MAX_TS_STRIKE_STUDY
-    # ------------------------------------------------------------------
     def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
                             binom=None, with_mc=False):
         columns = ["Strike", "Tree Price", "BS Price", "Tree-BS",
@@ -421,8 +415,6 @@ class Tree:
         pricer.compute_DeltaAndGamma_tree_var = False
         pricer.Binom_condition = False
 
-        # Limite le nombre de pas pour rendre le graphique lisible
-        # et le calcul rapide (comme la référence à 10-20 pas)
         study_ts = min(pricer.timeSteps, MAX_TS_STRIKE_STUDY)
         pricer.timeSteps = study_ts
 
