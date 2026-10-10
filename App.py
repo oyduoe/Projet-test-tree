@@ -16,14 +16,13 @@ with col1:
     st.subheader("Paramètres du marché")
     volatility = st.number_input("Volatility (%)", value=21.0, format="%.2f")
     risk_free = st.number_input("Riskfree (%)", value=3.0, format="%.2f")
-    dividend = st.number_input("Dividende EUR", value=0.0, format="%.2f")
+    dividend = st.number_input("Dividend (EUR)", value=0.0, format="%.2f")
     dividend_type = st.radio(
-        "Type de dividende",
+        "Dividend model",
         ["Discrete", "Continuous"],
         horizontal=True,
-        help=("Discrete : montant cash à la date ex-dividende (utilisé par "
-              "Tree et Binomial via modèle escrowed). "
-              "Continuous : rendement continu q = D/S (utilisé par BS).")
+        help=("Discrete : montant cash à la date ex-dividende. "
+              "Continuous : rendement continu q = D / S."),
     )
     spot_price = st.number_input("Spotprice", value=100.0, format="%.2f")
 
@@ -51,6 +50,7 @@ with col4:
     mc_condition = st.checkbox("Monte Carlo Pricing")
     binom_condition = st.checkbox("Binomial Pricing")
     compare_am_eur = st.checkbox("American vs European gap (Tree & Binomial)")
+    compare_div_modes = st.checkbox("Discrete vs Continuous dividend")
 
 st.subheader("Comparaisons")
 c1, c2 = st.columns(2)
@@ -85,6 +85,7 @@ if st.button("Run the calculation", type="primary"):
         "BinomCondition": binom_condition,
         "ComparePricesSteps": compare_prices_steps,
         "CompareAmEur": compare_am_eur,
+        "CompareDivModes": compare_div_modes,
         "ComputeDeltaAndGammaTree": True,
         "ComputeVegaTree": True,
     }
@@ -112,7 +113,8 @@ if "results" in st.session_state:
     message = (f"{input_data['Exercice']} {input_data['Type']} with strike at "
                f"{input_data['Strike']} and steps {input_data['Ts']} "
                f"(IR = {input_data['RiskFree']}, Vol = {input_data['Volatility']}%, "
-               f"Div = {input_data['Dividend']} EUR and Time = {round(ttm, 1)})")
+               f"Div = {input_data['Dividend']} EUR [{input_data['DividendType']}] "
+               f"and Time = {round(ttm, 1)})")
     st.markdown(f"**{message}**")
 
     # --- Prix ---
@@ -186,21 +188,19 @@ if "results" in st.session_state:
     if input_data["TreeBol"]:
         st.subheader("Trinomial Tree")
         svg_str = results.get("TreeSvg")
-
         if svg_str:
             st.caption(
                 f"Affichage limité aux 40 premières colonnes (sur {input_data['Ts']}). "
                 f"SVG : {len(svg_str):,} caractères."
             )
             st.markdown(
-                "- **Couleur du nœud = moneyness** : "
-                "vert = ITM, ambre = ATM, **bleu = OTM** "
-                "(inversé pour les Puts)\n"
+                "- **Couleur du nœud = moneyness** : vert = ITM, ambre = ATM, "
+                "**bleu = OTM** (inversé pour les Puts)\n"
+                "- **Taille** : ∝ √(proba cumulée)\n"
                 "- **Bordure rouge épaisse + point blanc central** : "
                 "exercice anticipé optimal (options American uniquement)\n"
                 "- **Arêtes** : bleu clair = Up, gris = Mid, orange = Down"
             )
-
             html = (
                 '<div style="width:100%; height:100%; overflow:auto; '
                 'border:1px solid #ddd; border-radius:6px; background:#fafafa;">'
@@ -208,7 +208,6 @@ if "results" in st.session_state:
                 '</div>'
             )
             components.html(html, height=900, scrolling=True)
-
             st.download_button(
                 "Download SVG",
                 data=svg_str.encode("utf-8"),
@@ -219,8 +218,7 @@ if "results" in st.session_state:
         else:
             st.warning(
                 "SVG non généré. Vérifie que `svg-py` est installé : "
-                "`pip install svg-py`. Regarde la console Python pour "
-                "un éventuel message `[SVG] ...`."
+                "`pip install svg-py`."
             )
 
     # --- Convergence ---
@@ -253,3 +251,26 @@ if "results" in st.session_state:
         st.pyplot(results["CompareAmEur"], use_container_width=True)
     if "CompareAmEurError" in results:
         st.error(f"Erreur American vs European :\n{results['CompareAmEurError']}")
+
+    # --- Discrete vs Continuous dividend ---
+    if input_data.get("CompareDivModes", False):
+        st.subheader("Discrete vs Continuous dividend")
+        fig = results.get("CompareDivModesFig")
+        if fig is not None:
+            st.pyplot(fig, use_container_width=True)
+            st.caption(
+                "Avec un dividende **cash discret**, le prix dépend fortement "
+                "de la date ex-dividende (courbe bleue) : un dividende payé tôt "
+                "est actualisé plus longtemps, un dividende payé tard impacte "
+                "directement le payoff final. Avec un **rendement continu** "
+                "q = D/S (courbe orange), la date n'a aucun effet — c'est une "
+                "approximation qui n'est précise que si les dividendes sont "
+                "petits et réguliers."
+            )
+        else:
+            st.info(
+                "Dividend = 0 EUR → les deux modes donnent exactement le même prix. "
+                "Le graphique n'a d'intérêt que pour un dividende strictement positif."
+            )
+        if "CompareDivModesError" in results:
+            st.error(f"Erreur Discrete vs Continuous :\n{results['CompareDivModesError']}")
