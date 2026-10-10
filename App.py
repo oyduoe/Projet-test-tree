@@ -40,6 +40,12 @@ with col3:
     st.subheader("Paramètres du pricer")
     pricing_date = st.date_input("Pricing Date", value=date(2024, 3, 1))
     ts = st.number_input("Time steps", value=100, min_value=1, step=1)
+    if ts > 200:
+        st.warning(
+            f"Ts = {ts} : le pricing Trinomial prend plusieurs dizaines de secondes. "
+            f"Les Greeks (limité à 200 pas) et le Strike Study (limité à 20 pas) "
+            f"utilisent automatiquement un Ts réduit pour rester rapides."
+        )
     pruning_threshold = st.number_input("Pruning threshold", value=1e-9, format="%.10f")
     spread_error = st.number_input("Spread error", value=0.0, format="%.6f")
 

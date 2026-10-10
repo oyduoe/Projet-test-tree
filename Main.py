@@ -333,6 +333,7 @@ def run_calculations(input_data: dict) -> dict:
         results["ConvergenceFig"] = arbre.Convergence_fig
 
     # ---- Greeks ----
+    # Tree : limité à 200 pas en interne (les Greeks convergent bien avant)
     t0 = time.time()
     pricer.greeks_tree = arbre.compute_greeks_tree(params, pricer, mkt)
     pricer.Tree_Greeks_Time = pricing_time_tree + (time.time() - t0)
@@ -342,12 +343,19 @@ def run_calculations(input_data: dict) -> dict:
     results["BS_Greeks_Time"] = pricer.BS_Greeks_Time
 
     if binom_checked:
-        def binom_price_fn(m, p, pr):
-            return binom.price_option(pr.timeSteps)
-        t0 = time.time()
-        pricer.greeks_binom = finite_difference_greeks(binom_price_fn, mkt, params, pricer)
-        pricer.Binom_Greeks_Time = pricer.Binom_Time + (time.time() - t0)
-        results["Binom_Greeks_Time"] = pricer.Binom_Greeks_Time
+        saved_ts_binom = pricer.timeSteps
+        MAX_TS_GREEKS = 200
+        if saved_ts_binom > MAX_TS_GREEKS:
+            pricer.timeSteps = MAX_TS_GREEKS
+        try:
+            def binom_price_fn(m, p, pr):
+                return binom.price_option(pr.timeSteps)
+            t0 = time.time()
+            pricer.greeks_binom = finite_difference_greeks(binom_price_fn, mkt, params, pricer)
+            pricer.Binom_Greeks_Time = pricer.Binom_Time + (time.time() - t0)
+            results["Binom_Greeks_Time"] = pricer.Binom_Greeks_Time
+        finally:
+            pricer.timeSteps = saved_ts_binom
     else:
         pricer.greeks_binom = {}
 
@@ -394,11 +402,11 @@ def run_calculations(input_data: dict) -> dict:
     if input_data.get("CompareDivModes", False):
         try:
             fig = _compare_dividend_modes(input_data)
-            results["CompareDivModesFig"] = fig  # peut être None si D=0
+            results["CompareDivModesFig"] = fig
         except Exception as e:
             results["CompareDivModesError"] = f"{e}\n{traceback.format_exc()}"
 
-    # ---- SVG tree ----
+    # ---- SVG ----
     if input_data["TreeBol"] and arbre.svg_str is not None:
         results["TreeSvg"] = arbre.svg_str
 

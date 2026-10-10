@@ -12,6 +12,8 @@ from Greeks import finite_difference_greeks
 
 
 MAX_SVG_DEPTH = 40
+MAX_TS_GREEKS = 200
+MAX_TS_STRIKE_STUDY = 20
 
 
 class Tree:
@@ -75,19 +77,13 @@ class Tree:
 
     # ------------------------------------------------------------------
     def _snapshot_tree(self, max_depth):
-        """Capture la structure de l'arbre AVANT pricing.
-        Renvoie {"columns": [[node, ...], ...], "edges": [(parent, attr, child), ...]}.
-        Limité à max_depth + 1 colonnes.
-        """
         root = self.Root_Node
         if root is None:
             return None
-
         columns = [[root]]
         edges = []
         current = [root]
         seen = {id(root)}
-
         for _ in range(max_depth):
             nxt = []
             for node in current:
@@ -104,7 +100,6 @@ class Tree:
             nxt.sort(key=lambda x: x.UndPrice, reverse=True)
             columns.append(nxt)
             current = nxt
-
         return {"columns": columns, "edges": edges}
 
     # ------------------------------------------------------------------
@@ -115,20 +110,16 @@ class Tree:
         for i in range(1, T + 1):
             self.build_columns(self.candidateMid, mkt, parameters, i, pricer)
 
-        # --- Snapshot avant pricing (la structure Next_* sera détruite après) ---
         snapshot_needed = (pricer.display_tree_bool
                            and (not condition_Convergence or T == pricer.timeSteps))
         if snapshot_needed:
-            self._tree_snapshot = self._snapshot_tree(
-                min(MAX_SVG_DEPTH, T))
+            self._tree_snapshot = self._snapshot_tree(min(MAX_SVG_DEPTH, T))
 
-        # --- Pricing (backward) ---
         self.candidateMid.price(self.candidateMid, parameters, mkt, self)
         price = self.Root_Node.OptPrice
         end_time = time.time()
         time_calculation = end_time - start_time
 
-        # --- SVG après pricing : OptPrice est rempli ---
         if snapshot_needed:
             self.time_calculation_tree = self.display_tree(pricer, parameters)
 
@@ -185,7 +176,13 @@ class Tree:
             self.price_results['TreeGapBinom'] = price - pricer.Binom_price
 
     # ------------------------------------------------------------------
+    # Greeks : limité à MAX_TS_GREEKS pas pour rester rapide
+    # ------------------------------------------------------------------
     def compute_greeks_tree(self, params, pricer, mkt):
+        saved_ts = pricer.timeSteps
+        if saved_ts > MAX_TS_GREEKS:
+            pricer.timeSteps = MAX_TS_GREEKS
+
         def price_fn(m, p, pr):
             saved = (pr.Convergence, pr.display_tree_bool, pr.BS_condition,
                      pr.MC_condition, pr.compute_DeltaAndGamma_tree_var,
@@ -204,7 +201,12 @@ class Tree:
             if hasattr(pr, 'Binom_condition'):
                 pr.Binom_condition = bc
             return price
-        return finite_difference_greeks(price_fn, mkt, params, pricer)
+
+        try:
+            result = finite_difference_greeks(price_fn, mkt, params, pricer)
+        finally:
+            pricer.timeSteps = saved_ts
+        return result
 
     # ------------------------------------------------------------------
     def build_triple(self, candidateMid, mkt, div):
@@ -391,6 +393,8 @@ class Tree:
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
     # ------------------------------------------------------------------
+    # Strike Study — Ts limité à MAX_TS_STRIKE_STUDY
+    # ------------------------------------------------------------------
     def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
                             binom=None, with_mc=False):
         columns = ["Strike", "Tree Price", "BS Price", "Tree-BS",
@@ -408,6 +412,7 @@ class Tree:
         saved_mc = pricer.MC_condition
         saved_dg = pricer.compute_DeltaAndGamma_tree_var
         saved_binom = getattr(pricer, 'Binom_condition', False)
+        saved_ts = pricer.timeSteps
 
         pricer.Convergence = False
         pricer.display_tree_bool = False
@@ -416,12 +421,17 @@ class Tree:
         pricer.compute_DeltaAndGamma_tree_var = False
         pricer.Binom_condition = False
 
+        # Limite le nombre de pas pour rendre le graphique lisible
+        # et le calcul rapide (comme la référence à 10-20 pas)
+        study_ts = min(pricer.timeSteps, MAX_TS_STRIKE_STUDY)
+        pricer.timeSteps = study_ts
+
         original_strike = params.strike
         params.strike = original_strike - 5
 
         for T in range(1, StrikeSteps + 1):
             params.strike += 1
-            self.build_tree(mkt, params, pricer, pricer.timeSteps,
+            self.build_tree(mkt, params, pricer, study_ts,
                             pricer.BS_price, False, True)
             tree_price = self.Root_Node.OptPrice
 
@@ -434,7 +444,7 @@ class Tree:
             df_strike.at[T, "Tree-BS"] = tree_price - bs_price
 
             if binom is not None:
-                bp = float(binom.price_option(pricer.timeSteps))
+                bp = float(binom.price_option(study_ts))
                 df_strike.at[T, "Binom Price"] = bp
                 df_strike.at[T, "Tree-Binom"] = tree_price - bp
 
@@ -445,6 +455,7 @@ class Tree:
                 df_strike.at[T, "Tree-MC"] = tree_price - mp
 
         params.strike = original_strike
+        pricer.timeSteps = saved_ts
 
         pricer.Convergence = saved_conv
         pricer.display_tree_bool = saved_tree
@@ -475,8 +486,6 @@ class Tree:
                             (df_strike.at[T + 1, price_col] - df_strike.at[T - 1, price_col]) / denom)
         return df_strike
 
-    # ------------------------------------------------------------------
-    # SVG tree — appelé APRÈS pricing pour disposer de OptPrice
     # ------------------------------------------------------------------
     def display_tree(self, pricer, params=None, max_display_depth=MAX_SVG_DEPTH):
         start_time_tree = time.time()
