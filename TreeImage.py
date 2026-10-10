@@ -1,29 +1,21 @@
 import math
 from VectorImage import VectorImage
 
-try:
-    import svg as _svg
-    _HAS_TITLE = hasattr(_svg, 'Title')
-except Exception:
-    _HAS_TITLE = False
-
 
 class TreeImage(VectorImage):
     """Rend un arbre trinomial en SVG.
 
-    Couleurs :
-      - Fond du nœud = moneyness (S vs K).
-          Call : vert foncé si deep ITM (S >> K), ambre si ATM, rouge si deep OTM.
-          Put  : même logique en inversant.
-      - Bordure épaisse rouge + point central blanc = exercice anticipé optimal
-        (uniquement pour les options américaines).
+    Code couleur :
+      - Remplissage = moneyness :
+          * ITM (Call : S > K ; Put : S < K) → vert
+          * ATM (S ≈ K)                       → ambre
+          * OTM (Call : S < K ; Put : S > K) → bleu
+      - Bordure rouge épaisse + point central blanc = exercice anticipé
+        optimal à ce nœud (uniquement options American).
 
     Taille du cercle ∝ sqrt(Cum_Proba).
 
-    Arêtes colorées par direction :
-      - Next_Up   : bleu
-      - Next_Mid  : gris
-      - Next_Down : orange
+    Arêtes colorées par direction (Up = bleu, Mid = gris, Down = orange).
     """
 
     DEFAULT_WIDTH = 1600
@@ -82,7 +74,7 @@ class TreeImage(VectorImage):
                 positions[id(node)] = (int(x), int(y))
                 id_to_node[id(node)] = node
 
-        # --- Arêtes (dessinées en premier, derrière) ---
+        # --- Arêtes (derrière) ---
         for (parent, attr, child) in edges:
             if id(parent) not in positions or id(child) not in positions:
                 continue
@@ -104,13 +96,13 @@ class TreeImage(VectorImage):
             early_ex = self._is_early_exercise(node)
 
             if early_ex:
-                stroke, sw = '#D32F2F', 3
+                stroke, sw = '#D32F2F', 3     # rouge épais = exercice anticipé
             else:
-                stroke, sw = '#333333', 1
+                stroke, sw = '#333333', 1     # contour neutre
 
             self.add_end(self.circle(x, y, radius, stroke, fill, sw, 0.95))
 
-            # Point blanc central pour signaler l'exercice anticipé
+            # Point blanc central pour l'exercice anticipé
             if early_ex and radius >= 5:
                 inner = max(2, radius // 3)
                 self.add_end(self.circle(x, y, inner,
@@ -120,9 +112,8 @@ class TreeImage(VectorImage):
     def _tree_data(self):
         """Renvoie (columns, edges).
 
-        - Si un snapshot post-pricing est disponible sur l'arbre, on l'utilise
-          (les nœuds ont alors OptPrice rempli).
-        - Sinon, BFS frais via Next_Up / Next_Mid / Next_Down.
+        Utilise le snapshot post-pricing si disponible (les nœuds ont alors
+        OptPrice rempli), sinon BFS frais.
         """
         snap = getattr(self.tree, '_tree_snapshot', None)
         if snap:
@@ -184,6 +175,16 @@ class TreeImage(VectorImage):
         return abs(opt - intrinsic) < tol
 
     def _node_fill(self, node):
+        """Remplissage = moneyness.
+
+        Call : r = S / K
+        Put  : r = K / S
+        r > 1 → ITM → vert
+        r ≈ 1 → ATM → ambre
+        r < 1 → OTM → bleu
+
+        Interpolation sur [0.85, 1.15] : bleu → ambre → vert.
+        """
         S = float(getattr(node, 'UndPrice', 0) or 0)
         if self.strike is None or self.strike <= 0 or S <= 0:
             return '#B0B0B0'
@@ -193,16 +194,14 @@ class TreeImage(VectorImage):
         else:
             r = self.strike / S
 
-        # r >= 1 → ITM → vert ; r < 1 → OTM → rouge
-        # Interpolation sur [0.85, 1.15] : rouge → ambre → vert
         t = max(0.0, min(1.0, (r - 0.85) / 0.30))
 
         if t < 0.5:
             s = t / 0.5
-            c1, c2 = (183, 28, 28), (255, 193, 7)      # rouge → ambre
+            c1, c2 = (33, 100, 200), (255, 193, 7)      # bleu → ambre
         else:
             s = (t - 0.5) / 0.5
-            c1, c2 = (255, 193, 7), (27, 94, 32)       # ambre → vert foncé
+            c1, c2 = (255, 193, 7), (27, 130, 40)       # ambre → vert
 
         rgb = tuple(int(c1[i] + (c2[i] - c1[i]) * s) for i in range(3))
         return f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'

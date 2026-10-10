@@ -184,12 +184,13 @@ if "results" in st.session_state:
                 f"SVG : {len(svg_str):,} caractères."
             )
             st.markdown(
-                "- **Couleur du nœud** : moneyness (vert = ITM, ambre = ATM, rouge = OTM — "
-                "inversé pour les Puts)\n"
+                "- **Couleur du nœud = moneyness** : "
+                "vert = ITM, ambre = ATM, **bleu = OTM** "
+                "(inversé pour les Puts)\n"
                 "- **Taille** : ∝ √(proba cumulée)\n"
-                "- **Bordure épaisse rouge + point blanc central** : exercice anticipé optimal "
-                "(uniquement sur les options American)\n"
-                "- **Arêtes** : bleu = Up, gris = Mid, orange = Down"
+                "- **Bordure rouge épaisse + point blanc central** : "
+                "exercice anticipé optimal (options American uniquement)\n"
+                "- **Arêtes** : bleu clair = Up, gris = Mid, orange = Down"
             )
 
             html = (
