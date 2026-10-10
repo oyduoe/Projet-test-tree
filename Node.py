@@ -23,9 +23,9 @@ class Node:
         self.Cum_Proba :float =0.00       # Probabilité cumulée du noeud
         self.OptPrice :float          # Prix de l'option à ce moment du noeud
 
-    def forward(self, mkt:Market, dt:float, div:float):
-        """Calcule la valeur forward du noeud."""
-        return self.UndPrice * math.exp(mkt.RiskFree * dt) - div
+    def forward(self, mkt, dt, div):
+        q = mkt.dividend_yield() if getattr(mkt, 'dividend_type', 'Discrete') == "Continuous" else 0.0
+        return self.UndPrice * math.exp((mkt.RiskFree - q) * dt) - div
 
     def init_node(self, market_value:float):
         """Initialise le noeud avec la valeur correspondante."""

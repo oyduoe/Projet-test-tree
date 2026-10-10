@@ -17,6 +17,14 @@ with col1:
     volatility = st.number_input("Volatility (%)", value=21.0, format="%.2f")
     risk_free = st.number_input("Riskfree (%)", value=3.0, format="%.2f")
     dividend = st.number_input("Dividende EUR", value=0.0, format="%.2f")
+    dividend_type = st.radio(
+        "Type de dividende",
+        ["Discrete", "Continuous"],
+        horizontal=True,
+        help=("Discrete : montant cash à la date ex-dividende (utilisé par "
+              "Tree et Binomial via modèle escrowed). "
+              "Continuous : rendement continu q = D/S (utilisé par BS).")
+    )
     spot_price = st.number_input("Spotprice", value=100.0, format="%.2f")
 
 with col2:
@@ -58,6 +66,7 @@ if st.button("Run the calculation", type="primary"):
         "Volatility": volatility,
         "RiskFree": risk_free,
         "Dividend": dividend,
+        "DividendType": dividend_type,
         "SpotPrice": spot_price,
         "Type": option_type,
         "Exercice": exercise,
@@ -187,7 +196,6 @@ if "results" in st.session_state:
                 "- **Couleur du nœud = moneyness** : "
                 "vert = ITM, ambre = ATM, **bleu = OTM** "
                 "(inversé pour les Puts)\n"
-                "- **Taille** : ∝ √(proba cumulée)\n"
                 "- **Bordure rouge épaisse + point blanc central** : "
                 "exercice anticipé optimal (options American uniquement)\n"
                 "- **Arêtes** : bleu clair = Up, gris = Mid, orange = Down"
