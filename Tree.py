@@ -440,7 +440,16 @@ class Tree:
             from TreeImage import TreeImage
             image = TreeImage(self, actual_depth)
             self.svg_str = image.as_str()
+            print(f"[SVG] généré : {len(self.svg_str):,} caractères, "
+                  f"{actual_depth} colonnes affichées "
+                  f"(sur {pricer.timeSteps}).")
+        except ImportError as e:
+            print(f"[SVG] ImportError : {e}. "
+                  f"Installe avec : pip install svg-py")
+            self.svg_str = None
         except Exception as e:
-            print(f"Erreur génération SVG : {e}")
+            import traceback
+            print(f"[SVG] Erreur : {e}")
+            traceback.print_exc()
             self.svg_str = None
         return time.time() - start_time_tree

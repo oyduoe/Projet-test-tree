@@ -1,4 +1,5 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import pandas as pd
 from datetime import date
 from Main import run_calculations
@@ -173,20 +174,38 @@ if "results" in st.session_state:
             st.write(f"Nouveau Time Step (spread error) : {results['New TS']:.0f}")
 
     # --- Trinomial Tree SVG ---
-    if "TreeSvg" in results and results["TreeSvg"]:
+    if input_data["TreeBol"]:
         st.subheader("Trinomial Tree")
-        st.caption(f"Les {min(40, input_data['Ts'])} premières colonnes "
-                   f"sont affichées (limite pour rester rapide). "
-                   f"Cercles rouges = probabilités négatives.")
-        st.markdown(
-            f'<div style="width:100%; overflow:auto; border:1px solid #ddd; '
-            f'border-radius:6px; background:#fafafa;">{results["TreeSvg"]}</div>',
-            unsafe_allow_html=True)
-        st.download_button(
-            "Download SVG",
-            data=results["TreeSvg"].encode("utf-8"),
-            file_name="trinomial_tree.svg",
-            mime="image/svg+xml")
+        svg_str = results.get("TreeSvg")
+
+        if svg_str:
+            st.caption(f"Affichage limité aux 40 premières colonnes "
+                       f"(sur {input_data['Ts']}). "
+                       f"Cercles rouges = probabilités négatives. "
+                       f"SVG : {len(svg_str):,} caractères.")
+
+            # Rendu via components.html (les <svg> sont strippés par st.markdown)
+            html = (
+                '<div style="width:100%; height:100%; overflow:auto; '
+                'border:1px solid #ddd; border-radius:6px; background:#fafafa;">'
+                f'{svg_str}'
+                '</div>'
+            )
+            components.html(html, height=900, scrolling=True)
+
+            st.download_button(
+                "Download SVG",
+                data=svg_str.encode("utf-8"),
+                file_name="trinomial_tree.svg",
+                mime="image/svg+xml",
+                key="dl_svg_tree",
+            )
+        else:
+            st.warning(
+                "SVG non généré. Vérifie que le paquet `svg-py` est installé : "
+                "`pip install svg-py`. Regarde aussi la console Python pour "
+                "un éventuel message d'erreur `[SVG] ...`."
+            )
 
     # --- Convergence ---
     if "ConvergenceFig" in results and results["ConvergenceFig"] is not None:
