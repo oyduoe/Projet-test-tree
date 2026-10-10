@@ -11,8 +11,6 @@ from Extension import Extension
 from Greeks import finite_difference_greeks
 
 
-# Profondeur maximale affichée en SVG. Limite la charge mémoire et le
-# temps de rendu même pour des arbres à 10 000 pas.
 MAX_SVG_DEPTH = 40
 
 
@@ -34,6 +32,7 @@ class Tree:
         self.nDown: Node = None
         self.df: DataFrame = None
         self.svg_str: str = None
+        self._tree_snapshot: dict = None
         self.Convergence_fig = None
         self.time_calculation_tree = 0.00
 
@@ -74,6 +73,41 @@ class Tree:
             self.Root_Node.Cum_Proba = 1
         self.candidateMid = self.Root_Node
 
+    # ------------------------------------------------------------------
+    def _snapshot_tree(self, max_depth):
+        """Capture la structure de l'arbre AVANT pricing.
+        Renvoie {"columns": [[node, ...], ...], "edges": [(parent, attr, child), ...]}.
+        Limité à max_depth + 1 colonnes.
+        """
+        root = self.Root_Node
+        if root is None:
+            return None
+
+        columns = [[root]]
+        edges = []
+        current = [root]
+        seen = {id(root)}
+
+        for _ in range(max_depth):
+            nxt = []
+            for node in current:
+                for attr in ("Next_Up", "Next_Mid", "Next_Down"):
+                    child = getattr(node, attr, None)
+                    if child is None:
+                        continue
+                    edges.append((node, attr, child))
+                    if id(child) not in seen:
+                        nxt.append(child)
+                        seen.add(id(child))
+            if not nxt:
+                break
+            nxt.sort(key=lambda x: x.UndPrice, reverse=True)
+            columns.append(nxt)
+            current = nxt
+
+        return {"columns": columns, "edges": edges}
+
+    # ------------------------------------------------------------------
     def build_tree(self, mkt, parameters, pricer, T, BS_Price,
                    condition_Convergence, isVega, ext=None, binom=None):
         start_time = time.time()
@@ -81,15 +115,22 @@ class Tree:
         for i in range(1, T + 1):
             self.build_columns(self.candidateMid, mkt, parameters, i, pricer)
 
-        # ---- SVG : on construit l'arbre AVANT pricing (liens Next_* intacts)
-        # On limite à MAX_SVG_DEPTH pour rester rapide même à 10k pas.
-        if pricer.display_tree_bool:
-            self.time_calculation_tree = self.display_tree(pricer)
+        # --- Snapshot avant pricing (la structure Next_* sera détruite après) ---
+        snapshot_needed = (pricer.display_tree_bool
+                           and (not condition_Convergence or T == pricer.timeSteps))
+        if snapshot_needed:
+            self._tree_snapshot = self._snapshot_tree(
+                min(MAX_SVG_DEPTH, T))
 
+        # --- Pricing (backward) ---
         self.candidateMid.price(self.candidateMid, parameters, mkt, self)
         price = self.Root_Node.OptPrice
         end_time = time.time()
         time_calculation = end_time - start_time
+
+        # --- SVG après pricing : OptPrice est rempli ---
+        if snapshot_needed:
+            self.time_calculation_tree = self.display_tree(pricer, parameters)
 
         if pricer.compute_DeltaAndGamma_tree_var:
             pricer.DeltaTree = self.Compute_DeltaTree(
@@ -340,11 +381,8 @@ class Tree:
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
     # ------------------------------------------------------------------
-    # Strike Study — colonnes conditionnelles
-    # ------------------------------------------------------------------
     def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
                             binom=None, with_mc=False):
-        # ---- Colonnes : Tree + BS toujours ; Binom/MC seulement si demandés
         columns = ["Strike", "Tree Price", "BS Price", "Tree-BS",
                    "Slope BS", "Slope Tree"]
         if binom is not None:
@@ -428,24 +466,19 @@ class Tree:
         return df_strike
 
     # ------------------------------------------------------------------
-    # SVG tree — remplace l'ancien DataFrame
+    # SVG tree — appelé APRÈS pricing pour disposer de OptPrice
     # ------------------------------------------------------------------
-    def display_tree(self, pricer, max_display_depth=MAX_SVG_DEPTH):
-        """Construit un SVG de l'arbre (limité à max_display_depth colonnes)
-        et stocke la chaîne SVG dans self.svg_str. Renvoie le temps de calcul.
-        """
+    def display_tree(self, pricer, params=None, max_display_depth=MAX_SVG_DEPTH):
         start_time_tree = time.time()
         actual_depth = min(max_display_depth, pricer.timeSteps)
         try:
             from TreeImage import TreeImage
-            image = TreeImage(self, actual_depth)
+            image = TreeImage(self, actual_depth, params=params)
             self.svg_str = image.as_str()
             print(f"[SVG] généré : {len(self.svg_str):,} caractères, "
-                  f"{actual_depth} colonnes affichées "
-                  f"(sur {pricer.timeSteps}).")
+                  f"{actual_depth} colonnes affichées (sur {pricer.timeSteps}).")
         except ImportError as e:
-            print(f"[SVG] ImportError : {e}. "
-                  f"Installe avec : pip install svg-py")
+            print(f"[SVG] ImportError : {e}. Installe : pip install svg-py")
             self.svg_str = None
         except Exception as e:
             import traceback

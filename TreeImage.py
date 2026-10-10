@@ -1,29 +1,46 @@
 import math
 from VectorImage import VectorImage
 
+try:
+    import svg as _svg
+    _HAS_TITLE = hasattr(_svg, 'Title')
+except Exception:
+    _HAS_TITLE = False
+
 
 class TreeImage(VectorImage):
     """Rend un arbre trinomial en SVG.
 
-    Points clés :
-    - On ne parcourt que `max_depth` colonnes (les premières de l'arbre).
-      Même pour un arbre à 10 000 pas, la construction reste très rapide.
-    - Traversal BFS via les seuls liens Next_Up / Next_Mid / Next_Down :
-      cela exclut automatiquement les nœuds « calculatoires » créés pour
-      Delta/Gamma (Root_Node.UpNode / DownNode), qui ne font pas partie de
-      l'arbre.
-    - Couleur : dégradé vert selon la proba cumulée, rouge si l'une des
-      probabilités de transition est négative.
-    - Rayon ∝ sqrt(proba cumulée).
-    - Arêtes dessinées en premier (add_beginning) pour rester derrière.
+    Couleurs :
+      - Fond du nœud = moneyness (S vs K).
+          Call : vert foncé si deep ITM (S >> K), ambre si ATM, rouge si deep OTM.
+          Put  : même logique en inversant.
+      - Bordure épaisse rouge + point central blanc = exercice anticipé optimal
+        (uniquement pour les options américaines).
+
+    Taille du cercle ∝ sqrt(Cum_Proba).
+
+    Arêtes colorées par direction :
+      - Next_Up   : bleu
+      - Next_Mid  : gris
+      - Next_Down : orange
     """
 
     DEFAULT_WIDTH = 1600
     DEFAULT_HEIGHT = 1000
 
-    def __init__(self, tree, max_depth, width=None, height=None):
+    def __init__(self, tree, max_depth, params=None, width=None, height=None):
         self.tree = tree
         self.max_depth = max(1, int(max_depth))
+        self.params = params
+        self.option_type = (getattr(params, 'type_contrat', 'Call') or 'Call') if params else 'Call'
+        try:
+            self.strike = float(getattr(params, 'strike', 0) or 0)
+        except (TypeError, ValueError):
+            self.strike = 0.0
+        self.is_american = ((getattr(params, 'Exercice', 'European') or 'European')
+                            == 'American') if params else False
+
         w = width or self.DEFAULT_WIDTH
         h = height or self.DEFAULT_HEIGHT
         super().__init__(w, h)
@@ -31,35 +48,29 @@ class TreeImage(VectorImage):
 
     # ------------------------------------------------------------------
     def build_image(self):
-        columns = self._collect_columns(self.max_depth)
+        columns, edges = self._tree_data()
         if not columns:
-            return
-
-        # Cas dégénéré : seulement la racine
-        if len(columns) == 1:
-            cx, cy = self.width // 2, self.height // 2
-            self.add_end(self.circle(cx, cy, 20, '#222222', '#2A9D8F', 1, 1.0))
             return
 
         n_cols = len(columns)
         max_d = n_cols - 1
 
-        left_margin = 60
-        right_margin = 60
-        top_margin = 40
-        bottom_margin = 40
-
+        left_margin, right_margin = 60, 60
+        top_margin, bottom_margin = 40, 40
         usable_w = self.width - left_margin - right_margin
         usable_h = self.height - top_margin - bottom_margin
 
-        col_width = usable_w / max_d
+        col_width = (usable_w / max_d) if max_d > 0 else 0.0
         center_y = top_margin + usable_h / 2.0
 
-        max_nodes = 2 * max_d + 1
-        row_spacing = usable_h / max_nodes
-        max_radius = max(min(col_width * 0.35, row_spacing * 0.40), 2)
+        max_nodes = 2 * max_d + 1 if max_d > 0 else 1
+        row_spacing = (usable_h / max_nodes) if max_nodes > 0 else usable_h
+        if max_d > 0:
+            max_radius = max(min(col_width * 0.35, row_spacing * 0.40), 3)
+        else:
+            max_radius = 20
 
-        # --- Positions & index ---
+        # --- Positions ---
         positions = {}
         id_to_node = {}
         for d, col in enumerate(columns):
@@ -71,65 +82,79 @@ class TreeImage(VectorImage):
                 positions[id(node)] = (int(x), int(y))
                 id_to_node[id(node)] = node
 
-        # --- Arêtes (derrière) ---
-        for d in range(n_cols - 1):
-            next_col_ids = {id(n) for n in columns[d + 1]}
-            for node in columns[d]:
-                x1, y1 = positions[id(node)]
-                for attr in ("Next_Up", "Next_Mid", "Next_Down"):
-                    child = getattr(node, attr, None)
-                    if child is None or id(child) not in next_col_ids:
-                        continue
-                    x2, y2 = positions[id(child)]
-                    edge_color = ('#F4A4A4' if self._has_negative(node)
-                                  else '#B8B8B8')
-                    self.add_beginning(
-                        self.segment(x1, y1, x2, y2, edge_color, 1,
-                                     opacity=0.35))
+        # --- Arêtes (dessinées en premier, derrière) ---
+        for (parent, attr, child) in edges:
+            if id(parent) not in positions or id(child) not in positions:
+                continue
+            x1, y1 = positions[id(parent)]
+            x2, y2 = positions[id(child)]
+            if attr == "Next_Up":
+                ec = '#5C9EE8'   # bleu
+            elif attr == "Next_Down":
+                ec = '#E89E5C'   # orange
+            else:
+                ec = '#B0B0B0'   # gris
+            self.add_beginning(self.segment(x1, y1, x2, y2, ec, 1, opacity=0.35))
 
         # --- Nœuds ---
         for node_id, (x, y) in positions.items():
             node = id_to_node[node_id]
             radius = self._node_radius(node, max_radius)
-            fill = self._node_color(node)
-            self.add_end(self.circle(
-                x, y, radius,
-                stroke_color='#333333', fill_color=fill,
-                stroke_width=1, opacity=0.95))
+            fill = self._node_fill(node)
+            early_ex = self._is_early_exercise(node)
+
+            if early_ex:
+                stroke, sw = '#D32F2F', 3
+            else:
+                stroke, sw = '#333333', 1
+
+            self.add_end(self.circle(x, y, radius, stroke, fill, sw, 0.95))
+
+            # Point blanc central pour signaler l'exercice anticipé
+            if early_ex and radius >= 5:
+                inner = max(2, radius // 3)
+                self.add_end(self.circle(x, y, inner,
+                                         '#FFFFFF', '#FFFFFF', 0, 0.9))
 
     # ------------------------------------------------------------------
-    def _collect_columns(self, max_depth):
-        """BFS par colonnes via Next_Up / Next_Mid / Next_Down.
+    def _tree_data(self):
+        """Renvoie (columns, edges).
 
-        Cette approche garantit qu'on ne visite QUE les vrais nœuds de
-        l'arbre. Les nœuds Root_Node.UpNode / DownNode (créés pour les
-        Greeks) et les nœuds dérivés (up_calc.Next_Up etc.) ne sont pas
-        atteignables via ces liens, donc ils sont naturellement exclus.
+        - Si un snapshot post-pricing est disponible sur l'arbre, on l'utilise
+          (les nœuds ont alors OptPrice rempli).
+        - Sinon, BFS frais via Next_Up / Next_Mid / Next_Down.
         """
-        columns = []
+        snap = getattr(self.tree, '_tree_snapshot', None)
+        if snap:
+            return snap["columns"][:self.max_depth + 1], snap["edges"]
+
         root = self.tree.Root_Node
         if root is None:
-            return columns
+            return [], []
 
-        current_level = [root]
-        columns.append(current_level)
+        columns = [[root]]
+        edges = []
+        current = [root]
+        seen = {id(root)}
 
-        for _ in range(max_depth):
-            next_level = []
-            seen = set()
-            for node in current_level:
+        for _ in range(self.max_depth):
+            nxt = []
+            for node in current:
                 for attr in ("Next_Up", "Next_Mid", "Next_Down"):
                     child = getattr(node, attr, None)
-                    if child is not None and id(child) not in seen:
-                        next_level.append(child)
+                    if child is None:
+                        continue
+                    edges.append((node, attr, child))
+                    if id(child) not in seen:
+                        nxt.append(child)
                         seen.add(id(child))
-            if not next_level:
+            if not nxt:
                 break
-            next_level.sort(key=lambda x: x.UndPrice, reverse=True)
-            columns.append(next_level)
-            current_level = next_level
+            nxt.sort(key=lambda x: x.UndPrice, reverse=True)
+            columns.append(nxt)
+            current = nxt
 
-        return columns
+        return columns, edges
 
     # ------------------------------------------------------------------
     def _node_radius(self, node, max_radius):
@@ -142,27 +167,42 @@ class TreeImage(VectorImage):
         r = max_radius * math.sqrt(max(p, 1e-4))
         return max(int(r), 2)
 
-    def _has_negative(self, node):
-        for attr in ('Proba_Up', 'Proba_Mid', 'Proba_Down'):
-            v = getattr(node, attr, 0) or 0
-            try:
-                if float(v) < 0:
-                    return True
-            except (TypeError, ValueError):
-                continue
-        return False
-
-    def _node_color(self, node):
-        if self._has_negative(node):
-            return '#E63946'  # rouge
-        p = getattr(node, 'Cum_Proba', 0) or 0.0
+    def _is_early_exercise(self, node):
+        if not self.is_american or self.params is None:
+            return False
+        opt = getattr(node, 'OptPrice', None)
+        if opt is None:
+            return False
         try:
-            p = float(p)
+            opt = float(opt)
         except (TypeError, ValueError):
-            p = 0.0
-        p = max(0.0, min(1.0, p))
-        # Dégradé vert clair -> vert foncé
-        r = int(200 - 160 * p)
-        g = int(220 - 60 * p)
-        b = int(200 - 160 * p)
-        return f'#{r:02x}{g:02x}{b:02x}'
+            return False
+        intrinsic = float(self.params.Vi(node.UndPrice))
+        if intrinsic <= 0:
+            return False
+        tol = 1e-8 * max(1.0, abs(opt))
+        return abs(opt - intrinsic) < tol
+
+    def _node_fill(self, node):
+        S = float(getattr(node, 'UndPrice', 0) or 0)
+        if self.strike is None or self.strike <= 0 or S <= 0:
+            return '#B0B0B0'
+
+        if self.option_type == "Call":
+            r = S / self.strike
+        else:
+            r = self.strike / S
+
+        # r >= 1 → ITM → vert ; r < 1 → OTM → rouge
+        # Interpolation sur [0.85, 1.15] : rouge → ambre → vert
+        t = max(0.0, min(1.0, (r - 0.85) / 0.30))
+
+        if t < 0.5:
+            s = t / 0.5
+            c1, c2 = (183, 28, 28), (255, 193, 7)      # rouge → ambre
+        else:
+            s = (t - 0.5) / 0.5
+            c1, c2 = (255, 193, 7), (27, 94, 32)       # ambre → vert foncé
+
+        rgb = tuple(int(c1[i] + (c2[i] - c1[i]) * s) for i in range(3))
+        return f'#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}'

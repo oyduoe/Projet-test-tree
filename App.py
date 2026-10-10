@@ -179,12 +179,19 @@ if "results" in st.session_state:
         svg_str = results.get("TreeSvg")
 
         if svg_str:
-            st.caption(f"Affichage limité aux 40 premières colonnes "
-                       f"(sur {input_data['Ts']}). "
-                       f"Cercles rouges = probabilités négatives. "
-                       f"SVG : {len(svg_str):,} caractères.")
+            st.caption(
+                f"Affichage limité aux 40 premières colonnes (sur {input_data['Ts']}). "
+                f"SVG : {len(svg_str):,} caractères."
+            )
+            st.markdown(
+                "- **Couleur du nœud** : moneyness (vert = ITM, ambre = ATM, rouge = OTM — "
+                "inversé pour les Puts)\n"
+                "- **Taille** : ∝ √(proba cumulée)\n"
+                "- **Bordure épaisse rouge + point blanc central** : exercice anticipé optimal "
+                "(uniquement sur les options American)\n"
+                "- **Arêtes** : bleu = Up, gris = Mid, orange = Down"
+            )
 
-            # Rendu via components.html (les <svg> sont strippés par st.markdown)
             html = (
                 '<div style="width:100%; height:100%; overflow:auto; '
                 'border:1px solid #ddd; border-radius:6px; background:#fafafa;">'
@@ -202,9 +209,9 @@ if "results" in st.session_state:
             )
         else:
             st.warning(
-                "SVG non généré. Vérifie que le paquet `svg-py` est installé : "
-                "`pip install svg-py`. Regarde aussi la console Python pour "
-                "un éventuel message d'erreur `[SVG] ...`."
+                "SVG non généré. Vérifie que `svg-py` est installé : "
+                "`pip install svg-py`. Regarde la console Python pour "
+                "un éventuel message `[SVG] ...`."
             )
 
     # --- Convergence ---
