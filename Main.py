@@ -151,13 +151,24 @@ def _compare_american_european(input_data):
 
 
 def _compare_dividend_modes(input_data, n_points=12):
-    """Grille 2x2 : chaque modèle montre Discrete vs Continuous vs No-div.
+    """Un seul graphe : Discrete vs Continuous par modèle actif.
 
-    Renvoie None si Dividend <= 0 (aucune différence entre les modes).
+    - Tree + BS : toujours
+    - Binomial : si BinomCondition
+    - Monte Carlo : si MCCondition
+
+    Chaque modèle a DEUX courbes :
+        - ligne pleine      = Discrete (cash)
+        - ligne pointillée  = Continuous (yield q=D/S)
+
+    Renvoie None si Dividend <= 0.
     """
     D = float(input_data.get("Dividend", 0.0))
     if D <= 0:
         return None
+
+    binom_checked = bool(input_data.get("BinomCondition", False))
+    mc_checked = bool(input_data.get("MCCondition", False))
 
     PD = input_data["PricingDate"]
     MD = input_data["Maturity"]
@@ -168,13 +179,13 @@ def _compare_dividend_modes(input_data, n_points=12):
     fractions = np.linspace(0.05, 0.95, n_points)
     ex_days = [max(1, int(round(f * total_days))) for f in fractions]
 
-    # Pour chaque modèle on stocke deux listes : discrete / continuous
-    prices = {
-        "Binomial":      {"disc": [], "cont": []},
-        "Trinomial":     {"disc": [], "cont": []},
-        "Black-Scholes": {"disc": [], "cont": []},
-        "Monte Carlo":   {"disc": [], "cont": []},
-    }
+    models = ["Trinomial", "Black-Scholes"]
+    if binom_checked:
+        models.append("Binomial")
+    if mc_checked:
+        models.append("Monte Carlo")
+
+    prices = {m: {"disc": [], "cont": []} for m in models}
 
     def _price_all(local):
         mkt = Market(local)
@@ -184,7 +195,6 @@ def _compare_dividend_modes(input_data, n_points=12):
         binom = Binomial(mkt, params, pricer)
         arbre = Tree()
 
-        # Neutralise tout ce qui n'est pas le prix
         pricer.Convergence = False
         pricer.display_tree_bool = False
         pricer.BS_condition = False
@@ -192,22 +202,16 @@ def _compare_dividend_modes(input_data, n_points=12):
         pricer.compute_DeltaAndGamma_tree_var = False
         pricer.Binom_condition = False
 
-        # Binomial
-        p_binom = float(binom.price_option(pricer.timeSteps))
-
-        # Trinomial
+        out = {}
         arbre.init(mkt, params, pricer, True)
-        p_tree = float(arbre.Root_Node.OptPrice)
-
-        # Black-Scholes
-        bs = Ext.black_sholes()
-        p_bs = float(bs["BS Price"])
-
-        # Monte Carlo (modéré pour la rapidité)
-        np.random.seed(42)
-        p_mc = float(Ext.monte_carlo_price(3000))
-
-        return p_binom, p_tree, p_bs, p_mc
+        out["Trinomial"] = float(arbre.Root_Node.OptPrice)
+        out["Black-Scholes"] = float(Ext.black_sholes()["BS Price"])
+        if binom_checked:
+            out["Binomial"] = float(binom.price_option(pricer.timeSteps))
+        if mc_checked:
+            np.random.seed(42)
+            out["Monte Carlo"] = float(Ext.monte_carlo_price(3000))
+        return out
 
     for d in ex_days:
         for mode in ("Discrete", "Continuous"):
@@ -221,12 +225,10 @@ def _compare_dividend_modes(input_data, n_points=12):
             local["CompareAmEur"] = False
             local["CompareDivModes"] = False
 
-            b, t, s, m = _price_all(local)
+            p = _price_all(local)
             key = "disc" if mode == "Discrete" else "cont"
-            prices["Binomial"][key].append(b)
-            prices["Trinomial"][key].append(t)
-            prices["Black-Scholes"][key].append(s)
-            prices["Monte Carlo"][key].append(m)
+            for name in models:
+                prices[name][key].append(p[name])
 
     # Référence sans dividende
     local0 = dict(input_data)
@@ -237,29 +239,32 @@ def _compare_dividend_modes(input_data, n_points=12):
     local0["ComparePricesSteps"] = False
     local0["CompareAmEur"] = False
     local0["CompareDivModes"] = False
-    ref_b, ref_t, ref_s, ref_m = _price_all(local0)
-    refs = {"Binomial": ref_b, "Trinomial": ref_t,
-            "Black-Scholes": ref_s, "Monte Carlo": ref_m}
+    refs = _price_all(local0)
 
-    # ---- Grille 2x2 ----
-    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
-    order = ["Binomial", "Trinomial", "Black-Scholes", "Monte Carlo"]
+    # ---------- Un seul graphe ----------
+    style = {
+        "Trinomial":     ('orange', 'o'),
+        "Black-Scholes": ('green',  '^'),
+        "Binomial":      ('blue',   's'),
+        "Monte Carlo":   ('purple', 'x'),
+    }
 
-    for ax, name in zip(axes.flat, order):
-        ax.plot(ex_days, prices[name]["disc"], marker='o',
-                label='Discrete (cash)')
-        ax.plot(ex_days, prices[name]["cont"], marker='s',
-                label='Continuous (yield q=D/S)')
-        ax.axhline(refs[name], color='gray', linestyle=':',
-                   label=f'No dividend ({refs[name]:.4f})')
-        ax.set_xlabel("Ex-dividend date (days from pricing date)")
-        ax.set_ylabel("Option price")
-        ax.set_title(name)
-        ax.grid(True)
-        ax.legend(fontsize=8)
+    fig, ax = plt.subplots(figsize=(11, 6))
 
-    plt.suptitle(f"Discrete vs Continuous dividend — D = {D:.2f} EUR",
-                 fontsize=13, y=1.00)
+    for name in models:
+        c, m = style[name]
+        ax.plot(ex_days, prices[name]["disc"], color=c, marker=m, linestyle='-',
+                label=f"{name} — Discrete")
+        ax.plot(ex_days, prices[name]["cont"], color=c, marker=m, linestyle=':',
+                alpha=0.75, label=f"{name} — Continuous")
+        ax.axhline(refs[name], color=c, linestyle='--', alpha=0.3,
+                   label=f"{name} — No dividend ({refs[name]:.4f})")
+
+    ax.set_xlabel("Ex-dividend date (days from pricing date)")
+    ax.set_ylabel("Option price")
+    ax.set_title(f"Discrete vs Continuous dividend — D = {D:.2f} EUR")
+    ax.grid(True)
+    ax.legend(loc='best', fontsize=8, ncol=2)
     plt.tight_layout()
     return fig
 

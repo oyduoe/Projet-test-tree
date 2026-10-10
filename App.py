@@ -50,14 +50,15 @@ with col4:
     mc_condition = st.checkbox("Monte Carlo Pricing")
     binom_condition = st.checkbox("Binomial Pricing")
     compare_am_eur = st.checkbox("American vs European gap (Tree & Binomial)")
-    compare_div_modes = st.checkbox("Discrete vs Continuous dividend")
 
 st.subheader("Comparaisons")
-c1, c2 = st.columns(2)
+c1, c2, c3 = st.columns(3)
 with c1:
     strike_study = st.checkbox("Prices & Greeks vs Strike")
 with c2:
     compare_prices_steps = st.checkbox("Prices vs Steps")
+with c3:
+    compare_div_modes = st.checkbox("Discrete vs Continuous dividend")
 
 
 # ================= RUN =================
@@ -252,20 +253,19 @@ if "results" in st.session_state:
     if "CompareAmEurError" in results:
         st.error(f"Erreur American vs European :\n{results['CompareAmEurError']}")
 
-    # --- Discrete vs Continuous dividend ---
+    # --- Discrete vs Continuous dividend (un seul graphe) ---
     if input_data.get("CompareDivModes", False):
         st.subheader("Discrete vs Continuous dividend")
         fig = results.get("CompareDivModesFig")
         if fig is not None:
             st.pyplot(fig, use_container_width=True)
             st.caption(
-                "Avec un dividende **cash discret**, le prix dépend fortement "
-                "de la date ex-dividende (courbe bleue) : un dividende payé tôt "
-                "est actualisé plus longtemps, un dividende payé tard impacte "
-                "directement le payoff final. Avec un **rendement continu** "
-                "q = D/S (courbe orange), la date n'a aucun effet — c'est une "
-                "approximation qui n'est précise que si les dividendes sont "
-                "petits et réguliers."
+                "Pour chaque modèle : **ligne pleine = Discrete** (cash à la "
+                "date ex-dividende), **ligne pointillée = Continuous** "
+                "(rendement q = D/S appliqué uniformément). "
+                "Les lignes en tirets pâles sont les prix de référence sans "
+                "dividende. Si Discrete et Continuous se superposent, le choix "
+                "du mode n'a pas d'impact matériel."
             )
         else:
             st.info(
