@@ -3,12 +3,7 @@ import numpy as np
 
 
 class Binomial:
-    """Pricer Binomial CRR (Cox-Ross-Rubinstein).
-
-    Note : les dividendes discrets ne sont pas gérés dans cette version
-    (les modèles Binomial et Trinomial peuvent donc diverger légèrement
-    quand un dividende est présent).
-    """
+    """Pricer Binomial CRR (Cox-Ross-Rubinstein)."""
 
     def __init__(self, mkt, params, pricer):
         self.market = mkt
@@ -39,13 +34,11 @@ class Binomial:
 
         is_american = (self.params.Exercice == "American")
 
-        # Valeurs terminales (j = 0 → u^N, j = N → d^N)
         values = np.empty(n_steps + 1, dtype=float)
         for j in range(n_steps + 1):
             S = S0 * (u ** (n_steps - j)) * (d ** j)
             values[j] = self.params.Vi(S)
 
-        # Backward induction
         for i in range(n_steps - 1, -1, -1):
             for j in range(i + 1):
                 values[j] = disc * (p * values[j] + (1 - p) * values[j + 1])
