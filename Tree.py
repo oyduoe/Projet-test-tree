@@ -360,9 +360,19 @@ class Tree:
             self.ModifExMid = True
 
     def compute_proba(self, candidateMid, nnext, mkt, div):
-        esperance = candidateMid.UndPrice * np.exp(mkt.RiskFree * self.dt) - div
-        variance = (candidateMid.UndPrice ** 2) * np.exp(2 * mkt.RiskFree * self.dt) * (
-                np.exp(mkt.volatility ** 2 * self.dt) - 1)
+        div_type = getattr(mkt, 'dividend_type', 'Discrete')
+
+        if div_type == "Continuous":
+            q = mkt.dividend_yield()
+            drift = mkt.RiskFree - q
+            esperance = candidateMid.UndPrice * np.exp(drift * self.dt)
+            variance = (candidateMid.UndPrice ** 2) * np.exp(2 * drift * self.dt) * (
+                    np.exp(mkt.volatility ** 2 * self.dt) - 1)
+        else:
+            esperance = candidateMid.UndPrice * np.exp(mkt.RiskFree * self.dt) - div
+            variance = (candidateMid.UndPrice ** 2) * np.exp(2 * mkt.RiskFree * self.dt) * (
+                    np.exp(mkt.volatility ** 2 * self.dt) - 1)
+
         candidateMid.Proba_Down = ((nnext.UndPrice ** -2 * (variance + esperance ** 2) - 1 -
                                     (self.Alpha + 1) * (nnext.UndPrice ** -1 * esperance - 1)) /
                                    ((1 - self.Alpha) * (self.Alpha ** -2 - 1)))

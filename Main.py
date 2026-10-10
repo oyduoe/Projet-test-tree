@@ -151,11 +151,9 @@ def _compare_american_european(input_data):
 
 
 def _compare_dividend_modes(input_data, n_points=12):
-    """Binomial : prix en mode Discrete vs Continuous selon la date ex-dividende.
+    """Grille 2x2 : chaque modèle montre Discrete vs Continuous vs No-div.
 
-    - Mode Continuous : q = D / S0 appliqué partout → courbe plate en x.
-    - Mode Discrete   : cash actualisé au pas ex-date → dépend de la date.
-    Renvoie None si Dividend <= 0 (les deux modes sont identiques).
+    Renvoie None si Dividend <= 0 (aucune différence entre les modes).
     """
     D = float(input_data.get("Dividend", 0.0))
     if D <= 0:
@@ -167,39 +165,70 @@ def _compare_dividend_modes(input_data, n_points=12):
     if total_days <= 0:
         return None
 
-    # Bornes : évite 0 (début) et total_days (maturité)
     fractions = np.linspace(0.05, 0.95, n_points)
     ex_days = [max(1, int(round(f * total_days))) for f in fractions]
 
-    prices_disc, prices_cont = [], []
+    # Pour chaque modèle on stocke deux listes : discrete / continuous
+    prices = {
+        "Binomial":      {"disc": [], "cont": []},
+        "Trinomial":     {"disc": [], "cont": []},
+        "Black-Scholes": {"disc": [], "cont": []},
+        "Monte Carlo":   {"disc": [], "cont": []},
+    }
 
-    for d in ex_days:
-        # ---------- Discrete ----------
-        local = dict(input_data)
-        local["DivExDate"] = PD + timedelta(days=d)
-        local["DividendType"] = "Discrete"
-        local["Convergence"] = False
-        local["StrikeStudy"] = False
-        local["TreeBol"] = False
-        local["ComparePricesSteps"] = False
-        local["CompareAmEur"] = False
-        local["CompareDivModes"] = False
-
+    def _price_all(local):
         mkt = Market(local)
         params = OptionParameters(local)
         pricer = Pricer(local)
+        Ext = Extension(mkt, params, pricer)
         binom = Binomial(mkt, params, pricer)
-        prices_disc.append(float(binom.price_option(pricer.timeSteps)))
+        arbre = Tree()
 
-        # ---------- Continuous ----------
-        local["DividendType"] = "Continuous"
-        mkt2 = Market(local)
-        params2 = OptionParameters(local)
-        pricer2 = Pricer(local)
-        binom2 = Binomial(mkt2, params2, pricer2)
-        prices_cont.append(float(binom2.price_option(pricer2.timeSteps)))
+        # Neutralise tout ce qui n'est pas le prix
+        pricer.Convergence = False
+        pricer.display_tree_bool = False
+        pricer.BS_condition = False
+        pricer.MC_condition = False
+        pricer.compute_DeltaAndGamma_tree_var = False
+        pricer.Binom_condition = False
 
-    # ---------- Référence sans dividende ----------
+        # Binomial
+        p_binom = float(binom.price_option(pricer.timeSteps))
+
+        # Trinomial
+        arbre.init(mkt, params, pricer, True)
+        p_tree = float(arbre.Root_Node.OptPrice)
+
+        # Black-Scholes
+        bs = Ext.black_sholes()
+        p_bs = float(bs["BS Price"])
+
+        # Monte Carlo (modéré pour la rapidité)
+        np.random.seed(42)
+        p_mc = float(Ext.monte_carlo_price(3000))
+
+        return p_binom, p_tree, p_bs, p_mc
+
+    for d in ex_days:
+        for mode in ("Discrete", "Continuous"):
+            local = dict(input_data)
+            local["DivExDate"] = PD + timedelta(days=d)
+            local["DividendType"] = mode
+            local["Convergence"] = False
+            local["StrikeStudy"] = False
+            local["TreeBol"] = False
+            local["ComparePricesSteps"] = False
+            local["CompareAmEur"] = False
+            local["CompareDivModes"] = False
+
+            b, t, s, m = _price_all(local)
+            key = "disc" if mode == "Discrete" else "cont"
+            prices["Binomial"][key].append(b)
+            prices["Trinomial"][key].append(t)
+            prices["Black-Scholes"][key].append(s)
+            prices["Monte Carlo"][key].append(m)
+
+    # Référence sans dividende
     local0 = dict(input_data)
     local0["Dividend"] = 0.0
     local0["Convergence"] = False
@@ -208,32 +237,29 @@ def _compare_dividend_modes(input_data, n_points=12):
     local0["ComparePricesSteps"] = False
     local0["CompareAmEur"] = False
     local0["CompareDivModes"] = False
+    ref_b, ref_t, ref_s, ref_m = _price_all(local0)
+    refs = {"Binomial": ref_b, "Trinomial": ref_t,
+            "Black-Scholes": ref_s, "Monte Carlo": ref_m}
 
-    mkt0 = Market(local0)
-    params0 = OptionParameters(local0)
-    pricer0 = Pricer(local0)
-    binom0 = Binomial(mkt0, params0, pricer0)
-    price_no_div = float(binom0.price_option(pricer0.timeSteps))
+    # ---- Grille 2x2 ----
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    order = ["Binomial", "Trinomial", "Black-Scholes", "Monte Carlo"]
 
-    # ---------- Graphique ----------
-    fig, ax = plt.subplots(figsize=(10, 6))
-    ax.plot(ex_days, prices_disc, marker='o', label='Discrete (cash)')
-    ax.plot(ex_days, prices_cont, marker='s', label='Continuous (yield q=D/S)')
-    ax.axhline(price_no_div, color='gray', linestyle=':',
-               label=f'No dividend ({price_no_div:.4f})')
+    for ax, name in zip(axes.flat, order):
+        ax.plot(ex_days, prices[name]["disc"], marker='o',
+                label='Discrete (cash)')
+        ax.plot(ex_days, prices[name]["cont"], marker='s',
+                label='Continuous (yield q=D/S)')
+        ax.axhline(refs[name], color='gray', linestyle=':',
+                   label=f'No dividend ({refs[name]:.4f})')
+        ax.set_xlabel("Ex-dividend date (days from pricing date)")
+        ax.set_ylabel("Option price")
+        ax.set_title(name)
+        ax.grid(True)
+        ax.legend(fontsize=8)
 
-    ax.set_xlabel("Ex-dividend date (days from pricing date)")
-    ax.set_ylabel("Binomial option price")
-    ax.set_title(f"Discrete vs Continuous dividend — D = {D:.2f} EUR")
-    ax.grid(True)
-    ax.legend(loc='best')
-
-    gap_max = max(abs(d - c) for d, c in zip(prices_disc, prices_cont))
-    ax.text(0.02, 0.98,
-            f"Max gap : {gap_max:.4f} EUR",
-            transform=ax.transAxes, va='top',
-            bbox=dict(boxstyle='round', facecolor='white', alpha=0.85))
-
+    plt.suptitle(f"Discrete vs Continuous dividend — D = {D:.2f} EUR",
+                 fontsize=13, y=1.00)
     plt.tight_layout()
     return fig
 

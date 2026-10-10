@@ -1,6 +1,5 @@
 import numpy as np
 from scipy.stats import norm
-from datetime import timedelta
 
 
 class Extension:
@@ -9,109 +8,100 @@ class Extension:
         self.params = params
         self.pricer = pricer
 
-    # ------------------------------------------------------------------
-    # BLACK-SCHOLES
-    # ------------------------------------------------------------------
-    def black_sholes(self):
+    # ==================================================================
+    # BLACK-SCHOLES — supporte Discrete (Merton) et Continuous (yield)
+    # ==================================================================
+    def _bs_setup(self):
+        """Renvoie (S_adj, q, ttm) selon le mode de dividende.
+
+        - Continuous : S_adj = S, q = D / S
+        - Discrete   : S_adj = S - PV(D), q = 0  (modèle de Merton)
+        """
         ttm = (self.params.DateMaturity - self.pricer.PricingDate).days / 365.0
-        d1 = self.compute_d1(ttm)
+        div_type = getattr(self.market, 'dividend_type', 'Discrete')
+        S = self.market.SpotPrice
+        r = self.market.RiskFree
+        D = self.market.dividend
+        t_div = self.market.div_date
+
+        if div_type == "Continuous":
+            S_adj = S
+            q = D / S if S > 0 else 0.0
+        else:  # Discrete
+            if D > 0 and 0 < t_div < ttm:
+                S_adj = S - D * np.exp(-r * t_div)
+            else:
+                S_adj = S
+            q = 0.0
+        return S_adj, q, ttm
+
+    def black_sholes(self):
+        S, q, ttm = self._bs_setup()
+        if ttm <= 0:
+            self.pricer.BS_price = self.params.Vi(S)
+            return {
+                "BS Price": self.pricer.BS_price,
+                "Delta": 0.0, "Gamma": 0.0, "Vega": 0.0,
+                "Vomma": 0.0, "Vanna": 0.0, "Theta": 0.0, "Rho": 0.0
+            }
+
+        d1 = self.compute_d1(ttm, S, q)
         d2 = self.compute_d2(d1, ttm)
 
         if self.params.type_contrat == "Call":
-            self.pricer.BS_price = self.compute_call_price(ttm, d1, d2)
-            delta = self.compute_call_delta(d1)
-            rho = self.compute_rho_call(ttm, d2)
-            theta = self.compute_theta_call(ttm, d1, d2)
+            self.pricer.BS_price = self.compute_call_price(ttm, d1, d2, S, q)
+            delta = norm.cdf(d1)
+            rho = self.params.strike * ttm * np.exp(-self.market.RiskFree * ttm) * norm.cdf(d2)
+            theta = self.compute_theta_call(ttm, d1, d2, S, q)
         else:
-            self.pricer.BS_price = self.compute_put_price(ttm, d1, d2)
-            delta = self.compute_put_delta(d1)
-            rho = self.compute_rho_put(ttm, d2)
-            theta = self.compute_theta_put(ttm, d1, d2)
+            self.pricer.BS_price = self.compute_put_price(ttm, d1, d2, S, q)
+            delta = norm.cdf(d1) - 1
+            rho = -self.params.strike * ttm * np.exp(-self.market.RiskFree * ttm) * norm.cdf(-d2)
+            theta = self.compute_theta_put(ttm, d1, d2, S, q)
 
-        vega = self.compute_vega(ttm, d1)
-        gamma = self.compute_gamma(ttm, d1)
-        vomma = self.compute_vomma(ttm, d1, d2)
-        vanna = self.compute_vanna(ttm, d1, d2)
+        vega = S * np.exp(-q * ttm) * np.sqrt(ttm) * norm.pdf(d1)
+        gamma = np.exp(-q * ttm) * norm.pdf(d1) / (S * self.market.volatility * np.sqrt(ttm))
+        vomma = vega * d1 * d2 / self.market.volatility
+        vanna = -np.exp(-q * ttm) * norm.pdf(d1) * d2 / self.market.volatility
 
         return {
             "BS Price": self.pricer.BS_price,
-            "Delta": delta,
-            "Gamma": gamma,
-            "Vega": vega,
-            "Vomma": vomma,
-            "Vanna": vanna,
-            "Theta": theta,
-            "Rho": rho,
+            "Delta": delta, "Gamma": gamma, "Vega": vega,
+            "Vomma": vomma, "Vanna": vanna,
+            "Theta": theta, "Rho": rho,
         }
 
-    def compute_d1(self, ttm: float) -> float:
-        q = self.market.dividend / self.market.SpotPrice
-        return (np.log(self.market.SpotPrice / self.params.strike) +
+    def compute_d1(self, ttm, S, q):
+        return (np.log(S / self.params.strike) +
                 (self.market.RiskFree - q + 0.5 * self.market.volatility ** 2) * ttm) / \
                (self.market.volatility * np.sqrt(ttm))
 
-    def compute_d2(self, d1: float, ttm: float) -> float:
+    def compute_d2(self, d1, ttm):
         return d1 - self.market.volatility * np.sqrt(ttm)
 
-    def compute_call_price(self, ttm, d1, d2):
-        q = self.market.dividend / self.market.SpotPrice
-        return (self.market.SpotPrice * np.exp(-q * ttm) * norm.cdf(d1) -
+    def compute_call_price(self, ttm, d1, d2, S, q):
+        return (S * np.exp(-q * ttm) * norm.cdf(d1) -
                 self.params.strike * np.exp(-self.market.RiskFree * ttm) * norm.cdf(d2))
 
-    def compute_put_price(self, ttm, d1, d2):
-        q = self.market.dividend / self.market.SpotPrice
+    def compute_put_price(self, ttm, d1, d2, S, q):
         return (self.params.strike * np.exp(-self.market.RiskFree * ttm) * norm.cdf(-d2) -
-                self.market.SpotPrice * np.exp(-q * ttm) * norm.cdf(-d1))
+                S * np.exp(-q * ttm) * norm.cdf(-d1))
 
-    def compute_call_delta(self, d1):
-        return norm.cdf(d1)
-
-    def compute_put_delta(self, d1):
-        return norm.cdf(d1) - 1
-
-    def compute_vega(self, ttm, d1):
-        q = self.market.dividend / self.market.SpotPrice
-        return self.market.SpotPrice * np.exp(-q * ttm) * np.sqrt(ttm) * norm.pdf(d1)
-
-    def compute_gamma(self, ttm, d1):
-        q = self.market.dividend / self.market.SpotPrice
-        return (np.exp(-q * ttm) * norm.pdf(d1)) / \
-               (self.market.SpotPrice * self.market.volatility * np.sqrt(ttm))
-
-    def compute_vomma(self, ttm, d1, d2):
-        vega = self.compute_vega(ttm, d1)
-        return vega * d1 * d2 / self.market.volatility
-
-    def compute_vanna(self, ttm, d1, d2):
-        q = self.market.dividend / self.market.SpotPrice
-        return -np.exp(-q * ttm) * norm.pdf(d1) * d2 / self.market.volatility
-
-    def compute_rho_call(self, ttm, d2):
-        return self.params.strike * ttm * np.exp(-self.market.RiskFree * ttm) * norm.cdf(d2)
-
-    def compute_rho_put(self, ttm, d2):
-        return -self.params.strike * ttm * np.exp(-self.market.RiskFree * ttm) * norm.cdf(-d2)
-
-    def compute_theta_call(self, ttm, d1, d2):
-        q = self.market.dividend / self.market.SpotPrice
-        return (-self.market.SpotPrice * np.exp(-q * ttm) * norm.pdf(d1) *
-                self.market.volatility / (2 * np.sqrt(ttm)) -
+    def compute_theta_call(self, ttm, d1, d2, S, q):
+        return (-S * np.exp(-q * ttm) * norm.pdf(d1) * self.market.volatility / (2 * np.sqrt(ttm)) -
                 self.market.RiskFree * self.params.strike *
                 np.exp(-self.market.RiskFree * ttm) * norm.cdf(d2) +
-                q * self.market.SpotPrice * np.exp(-q * ttm) * norm.cdf(d1)) / 365
+                q * S * np.exp(-q * ttm) * norm.cdf(d1)) / 365
 
-    def compute_theta_put(self, ttm, d1, d2):
-        q = self.market.dividend / self.market.SpotPrice
-        return (-self.market.SpotPrice * np.exp(-q * ttm) * norm.pdf(d1) *
-                self.market.volatility / (2 * np.sqrt(ttm)) -
+    def compute_theta_put(self, ttm, d1, d2, S, q):
+        return (-S * np.exp(-q * ttm) * norm.pdf(d1) * self.market.volatility / (2 * np.sqrt(ttm)) -
                 self.market.RiskFree * self.params.strike *
                 np.exp(-self.market.RiskFree * ttm) * (1 - norm.cdf(d2)) -
-                q * self.market.SpotPrice * np.exp(-q * ttm) *
-                (1 - norm.cdf(d1))) / 365
+                q * S * np.exp(-q * ttm) * (1 - norm.cdf(d1))) / 365
 
-    # ------------------------------------------------------------------
-    # MONTE CARLO
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # MONTE CARLO — supporte Discrete et Continuous
+    # ==================================================================
     def monte_carlo_price(self, n_simulations: int) -> float:
         ttm = (self.params.DateMaturity - self.pricer.PricingDate).days / 365.0
         payoff_sum = 0.0
@@ -128,23 +118,28 @@ class Extension:
         return self.pricer.MC_price
 
     def simulate_asset_price(self, S: float, ttm: float) -> float:
+        sigma = self.market.volatility
+        r = self.market.RiskFree
+        dt = ttm / self.pricer.timeSteps
+        div_type = getattr(self.market, 'dividend_type', 'Discrete')
+        q = self.market.dividend_yield() if div_type == "Continuous" else 0.0
+
         for j in range(self.pricer.timeSteps):
             z = np.random.normal()
-            S = S * np.exp((self.market.RiskFree -
-                            (self.market.dividend / self.market.SpotPrice) -
-                            0.5 * self.market.volatility ** 2) *
-                           (ttm / self.pricer.timeSteps) +
-                           self.market.volatility *
-                           np.sqrt(ttm / self.pricer.timeSteps) * z)
+            S = S * np.exp((r - q - 0.5 * sigma ** 2) * dt +
+                            sigma * np.sqrt(dt) * z)
+            if div_type == "Discrete":
+                t_prev = j * dt
+                t_next = (j + 1) * dt
+                if t_prev < self.market.div_date <= t_next:
+                    S = max(S - self.market.dividend, 0.0)
             if S < 0:
-                S = 0
+                S = 0.0
         return S
 
     def monte_carlo_greeks(self, n_simulations: int = 20000) -> dict:
-        """Greeks MC par différences finies avec nombres aléatoires communs."""
         def price_fn(m, p, pr):
-            np.random.seed(42)  # nombres aléatoires communs
+            np.random.seed(42)
             return self.monte_carlo_price(n_simulations)
-
         from Greeks import finite_difference_greeks
         return finite_difference_greeks(price_fn, self.market, self.params, self.pricer)
