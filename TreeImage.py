@@ -8,14 +8,14 @@ class TreeImage(VectorImage):
     Points clés :
     - On ne parcourt que `max_depth` colonnes (les premières de l'arbre).
       Même pour un arbre à 10 000 pas, la construction reste très rapide.
-    - Colonne 0 = uniquement la racine (les UpNode/DownNode éventuellement
-      attachés à la racine ne font pas partie de l'arbre : ils servent au
-      calcul des Greeks par différences finies sur les 3 nœuds racine).
-    - Couleur d'un nœud : dégradé vert selon la proba cumulée, rouge si
-      l'une des probabilités de transition est négative.
+    - Traversal BFS via les seuls liens Next_Up / Next_Mid / Next_Down :
+      cela exclut automatiquement les nœuds « calculatoires » créés pour
+      Delta/Gamma (Root_Node.UpNode / DownNode), qui ne font pas partie de
+      l'arbre.
+    - Couleur : dégradé vert selon la proba cumulée, rouge si l'une des
+      probabilités de transition est négative.
     - Rayon ∝ sqrt(proba cumulée).
-    - Les arêtes sont dessinées en premier (add_beginning) pour rester
-      derrière les nœuds.
+    - Arêtes dessinées en premier (add_beginning) pour rester derrière.
     """
 
     DEFAULT_WIDTH = 1600
@@ -99,49 +99,35 @@ class TreeImage(VectorImage):
 
     # ------------------------------------------------------------------
     def _collect_columns(self, max_depth):
-        """Parcourt l'arbre colonne par colonne.
+        """BFS par colonnes via Next_Up / Next_Mid / Next_Down.
 
-        - Colonne 0 : uniquement la racine (pas de chaîne Up/Down : les
-          UpNode/DownNode de la racine ne sont pas des nœuds de l'arbre,
-          ce sont des artefacts pour le calcul des Greeks).
-        - Colonnes suivantes : chaîne des UpNode au-dessus du mid,
-          chaîne des DownNode en-dessous du mid.
+        Cette approche garantit qu'on ne visite QUE les vrais nœuds de
+        l'arbre. Les nœuds Root_Node.UpNode / DownNode (créés pour les
+        Greeks) et les nœuds dérivés (up_calc.Next_Up etc.) ne sont pas
+        atteignables via ces liens, donc ils sont naturellement exclus.
         """
         columns = []
         root = self.tree.Root_Node
         if root is None:
             return columns
 
-        # --- Colonne 0 : la racine seule ---
-        columns.append([root])
-
-        # --- Colonnes suivantes : à partir du mid du pas suivant ---
-        current_node = root.Next_Mid
+        current_level = [root]
+        columns.append(current_level)
 
         for _ in range(max_depth):
-            if current_node is None:
+            next_level = []
+            seen = set()
+            for node in current_level:
+                for attr in ("Next_Up", "Next_Mid", "Next_Down"):
+                    child = getattr(node, attr, None)
+                    if child is not None and id(child) not in seen:
+                        next_level.append(child)
+                        seen.add(id(child))
+            if not next_level:
                 break
-
-            col = []
-            mid_node = current_node
-
-            # chaîne des "Up" depuis le mid (inclut le mid)
-            n = mid_node
-            while n is not None:
-                col.append(n)
-                n = n.UpNode
-
-            # chaîne des "Down" sous le mid (mid déjà ajouté)
-            n = mid_node.DownNode
-            while n is not None:
-                col.append(n)
-                n = n.DownNode
-
-            # Tri haut -> bas par prix décroissant
-            col.sort(key=lambda x: x.UndPrice, reverse=True)
-            columns.append(col)
-
-            current_node = mid_node.Next_Mid
+            next_level.sort(key=lambda x: x.UndPrice, reverse=True)
+            columns.append(next_level)
+            current_level = next_level
 
         return columns
 
