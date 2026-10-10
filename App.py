@@ -39,18 +39,16 @@ with col4:
     st.subheader("Additional conditions")
     tree_bol = st.checkbox("Display the Trinomial Tree")
     convergence = st.checkbox("Convergence")
-    bs_condition = st.checkbox("Black-Scholes Pricing", value=True)
     mc_condition = st.checkbox("Monte Carlo Pricing")
     binom_condition = st.checkbox("Binomial Pricing")
+    compare_am_eur = st.checkbox("American vs European gap (Tree & Binomial)")
 
 st.subheader("Comparaisons")
-c1, c2, c3 = st.columns(3)
+c1, c2 = st.columns(2)
 with c1:
     strike_study = st.checkbox("Prices & Greeks vs Strike")
 with c2:
     compare_prices_steps = st.checkbox("Prices vs Steps")
-with c3:
-    compare_am_eur = st.checkbox("American vs European gaps")
 
 
 # ================= RUN =================
@@ -72,12 +70,11 @@ if st.button("Run the calculation", type="primary"):
         "TreeBol": tree_bol,
         "Convergence": convergence,
         "StrikeStudy": strike_study,
-        "BSCondition": bs_condition,
+        "BSCondition": True,          # BS toujours actif
         "MCCondition": mc_condition,
         "BinomCondition": binom_condition,
         "ComparePricesSteps": compare_prices_steps,
         "CompareAmEur": compare_am_eur,
-        # Flags encore lus par Pricer, toujours True désormais
         "ComputeDeltaAndGammaTree": True,
         "ComputeVegaTree": True,
     }
@@ -108,57 +105,77 @@ if "results" in st.session_state:
                f"Div = {input_data['Dividend']} EUR and Time = {round(ttm, 1)})")
     st.markdown(f"**{message}**")
 
-    # --- Prix principaux ---
+    # ---------------- Prix principaux ----------------
     cols = st.columns(4)
     cols[0].metric("Trinomial", f"{results.get('TreePrice', float('nan')):.6f}")
-    cols[1].metric("Black-Scholes",
-                   f"{results.get('BS Price', float('nan')):.6f}"
-                   if input_data["BSCondition"] else "—")
-    cols[2].metric("Binomial",
-                   f"{results.get('Binom Price', float('nan')):.6f}"
-                   if input_data["BinomCondition"] else "—")
-    cols[3].metric("Monte Carlo",
-                   f"{results.get('MC Price', float('nan')):.6f}"
-                   if input_data["MCCondition"] else "—")
+    cols[1].metric("Black-Scholes", f"{results.get('BS Price', float('nan')):.6f}")
+    if input_data["BinomCondition"]:
+        cols[2].metric("Binomial", f"{results.get('Binom Price', float('nan')):.6f}")
+    else:
+        cols[2].metric("Binomial", "—")
+    if input_data["MCCondition"]:
+        cols[3].metric("Monte Carlo", f"{results.get('MC Price', float('nan')):.6f}")
+    else:
+        cols[3].metric("Monte Carlo", "—")
 
-    # --- Greeks Table ---
-    # Tree toujours présent ; BS/MC/Binom uniquement s'ils sont cochés.
+    # ---------------- Temps de PRICING (prix seulement) ----------------
+    st.markdown("**Pricing times** *(time to compute the price only)*")
+    pt = {"Trinomial": results.get("TimePricing")}
+    pt["Black-Scholes"] = results.get("BS_Time")
+    if input_data["BinomCondition"]:
+        pt["Binomial"] = results.get("Binom_Time")
+    if input_data["MCCondition"]:
+        pt["Monte Carlo"] = results.get("MCTime")
+    pt = {k: v for k, v in pt.items() if v is not None}
+    if pt:
+        st.dataframe(
+            pd.DataFrame({"Model": list(pt.keys()),
+                          "Time (s)": [f"{v:.5f}" for v in pt.values()]}),
+            hide_index=True, use_container_width=True)
+
+    # ---------------- Table Greeks ----------------
     st.subheader("Greeks par modèle")
     greeks_rows = ["Delta", "Gamma", "Vega", "Vomma", "Vanna", "Theta"]
-
-    model_map = [("Tree", "greeks_tree")]
-    if input_data["BSCondition"]:
-        model_map.append(("Black-Scholes", "greeks_bs"))
+    model_map = [("Tree", "greeks_tree"), ("Black-Scholes", "greeks_bs")]
     if input_data["BinomCondition"]:
         model_map.append(("Binomial", "greeks_binom"))
     if input_data["MCCondition"]:
         model_map.append(("Monte Carlo", "greeks_mc"))
 
     data = {}
-    for model_name, key in model_map:
+    for name, key in model_map:
         g = results.get(key, {}) or {}
         if g:
-            data[model_name] = [float(g.get(r, float('nan'))) for r in greeks_rows]
-
+            data[name] = [float(g.get(r, float('nan'))) for r in greeks_rows]
     if data:
-        df_g = pd.DataFrame(data, index=greeks_rows)
-        st.dataframe(df_g.round(6), use_container_width=True)
-    else:
-        st.warning("Aucune Greeks disponible.")
+        st.dataframe(pd.DataFrame(data, index=greeks_rows).round(6),
+                     use_container_width=True)
 
-    # --- Temps de calcul ---
-    with st.expander("Détails des temps de calcul"):
-        for k, label in [("TimePricing", "Trinomial"),
-                         ("BS_Time", "Black-Scholes"),
-                         ("Binom_Time", "Binomial"),
-                         ("MCTime", "Monte Carlo"),
-                         ("Tree Display Time", "Affichage arbre")]:
-            if k in results:
-                st.write(f"{label} : {results[k]:.4f} s")
+    # ---------------- Temps de PRICING + GREEKS ----------------
+    st.markdown("**Pricing + Greeks times** *(price and all greeks)*")
+    tt = {"Trinomial": results.get("Tree_Greeks_Time"),
+          "Black-Scholes": results.get("BS_Greeks_Time")}
+    if input_data["BinomCondition"]:
+        tt["Binomial"] = results.get("Binom_Greeks_Time")
+    if input_data["MCCondition"]:
+        tt["Monte Carlo"] = results.get("MC_Greeks_Time")
+    tt = {k: v for k, v in tt.items() if v is not None}
+    if tt:
+        st.dataframe(
+            pd.DataFrame({"Model": list(tt.keys()),
+                          "Time (s)": [f"{v:.5f}" for v in tt.values()]}),
+            hide_index=True, use_container_width=True)
+        st.caption("BS est analytique : prix et greeks sont calculés en un seul appel, "
+                   "les deux temps sont identiques.")
+
+    # ---------------- Autres temps ----------------
+    with st.expander("Autres temps de calcul"):
+        if "Tree Display Time" in results:
+            st.write(f"Affichage arbre : {results['Tree Display Time']:.4f} s")
         if "New TS" in results:
             st.write(f"Nouveau Time Step (spread error) : {results['New TS']:.0f}")
 
-    # --- Arbre Trinomial ---
+    # ---------------- Arbre Trinomial ----------------
     if "TreeDf" in results and results["TreeDf"] is not None:
         st.subheader("Trinomial Tree (probabilités)")
         st.dataframe(results["TreeDf"], use_container_width=True)
@@ -166,19 +183,19 @@ if "results" in st.session_state:
         st.download_button("Télécharger l'arbre (CSV)",
                            data=csv, file_name="trinomial_tree.csv", mime="text/csv")
 
-    # --- Convergence classique ---
+    # ---------------- Convergence ----------------
     if "ConvergenceFig" in results and results["ConvergenceFig"] is not None:
-        st.subheader("Convergence vers Black-Scholes")
+        st.subheader("Convergence")
         st.pyplot(results["ConvergenceFig"], use_container_width=True)
 
-    # --- Strike Study ---
+    # ---------------- Strike Study ----------------
     if "StrikeStudyFig" in results and results["StrikeStudyFig"] is not None:
-        st.subheader("Prix, Gaps et Slopes vs Strike")
+        st.subheader("Prices, Gaps & Slopes vs Strike")
         st.pyplot(results["StrikeStudyFig"], use_container_width=True)
     if "StrikeStudyError" in results:
         st.error(f"Erreur Strike Study :\n{results['StrikeStudyError']}")
 
-    # --- Comparatifs : prix / gaps / temps vs steps ---
+    # ---------------- Comparatif vs Steps ----------------
     if "ComparePricesSteps" in results:
         comp = results["ComparePricesSteps"]
         st.subheader("Prix vs Steps")
@@ -190,9 +207,9 @@ if "results" in st.session_state:
     if "ComparePricesStepsError" in results:
         st.error(f"Erreur Prices vs Steps :\n{results['ComparePricesStepsError']}")
 
-    # --- Comparatif American vs European ---
+    # ---------------- American vs European ----------------
     if "CompareAmEur" in results and results["CompareAmEur"] is not None:
-        st.subheader("Gap American - European par modèle")
+        st.subheader("Gap American - European")
         st.pyplot(results["CompareAmEur"], use_container_width=True)
     if "CompareAmEurError" in results:
         st.error(f"Erreur American vs European :\n{results['CompareAmEurError']}")

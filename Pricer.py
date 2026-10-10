@@ -27,9 +27,14 @@ class Pricer:
 
         self.Binom_price = 0.0
         self.Binom_Time = 0.0
-        self.Binom_condition = False  # positionné par Main
+        self.Binom_condition = False
 
-        # DataFrame de convergence : contient Tree - BS, + Tree - MC / Tree - Binom
+        # Temps "prix + greeks" par modèle
+        self.Tree_Greeks_Time: float = 0.0
+        self.BS_Greeks_Time: float = 0.0
+        self.Binom_Greeks_Time: float = 0.0
+        self.MC_Greeks_Time: float = 0.0
+
         self.Convergence_df = pd.DataFrame(
             columns=["Time Steps", "Tree Price",
                      "Time to compute Trinomial Tree",
@@ -61,9 +66,7 @@ class Pricer:
             self.Convergence_df.loc[T, "(Tree – Binom) x NbSteps"] = (price - binom_price) * T
 
     def create_plot_convergence(self):
-        df = self.Convergence_df.copy()
-        df = df.dropna(subset=["Time Steps"])
-
+        df = self.Convergence_df.copy().dropna(subset=["Time Steps"])
         x = pd.to_numeric(df["Time Steps"], errors='coerce')
         y_bs = pd.to_numeric(df["(Tree – BS) x NbSteps"], errors='coerce')
 
@@ -89,7 +92,6 @@ class Pricer:
         """Un seul graphe : prix + gaps (axe gauche) et slopes (axe droit)."""
         fig, ax1 = plt.subplots(figsize=(12, 6))
 
-        # ---- Axe GAUCHE : prix et gaps ----
         ax1.plot(df_strike["Strike"].astype(float), df_strike["BS Price"].astype(float),
                  label="BS", color='green', linestyle='-')
         ax1.plot(df_strike["Strike"].astype(float), df_strike["Tree Price"].astype(float),
@@ -116,7 +118,6 @@ class Pricer:
         ax1.tick_params(axis='y', labelcolor='blue')
         ax1.grid(True)
 
-        # ---- Axe DROIT : slopes ----
         ax2 = ax1.twinx()
         for col, lbl, c in [("Slope BS", "Slope BS", 'green'),
                             ("Slope Tree", "Slope Tree", 'orange'),
@@ -130,12 +131,9 @@ class Pricer:
         ax2.set_ylabel('Slope', color='purple')
         ax2.tick_params(axis='y', labelcolor='purple')
 
-        # ---- Légende combinée ----
         lines1, labels1 = ax1.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
-        ax1.legend(lines1 + lines2, labels1 + labels2,
-                   loc='best', fontsize=8, ncol=2)
-
+        ax1.legend(lines1 + lines2, labels1 + labels2, loc='best', fontsize=8, ncol=2)
         plt.title("Prices, Gaps & Slopes vs Strike")
         plt.tight_layout()
         return fig
