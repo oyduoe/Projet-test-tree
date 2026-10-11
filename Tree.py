@@ -36,9 +36,6 @@ class Tree:
     # ============================================================
     def init(self, mkt, params, pricer, IsVega):
         self.Market = mkt
-
-        # Si on fait la convergence OU l'étude du strike, on a besoin
-        # d'une référence BS même si la case n'est pas cochée.
         if pricer.Convergence or pricer.StrikeStudy:
             _ext = Extension(mkt, params, pricer)
             _ext.black_sholes()
@@ -129,12 +126,7 @@ class Tree:
             pricer.GammaTree = self.Compute_GammaTree(
                 price, self.Root_Node.UpNode.OptPrice,
                 self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
-
-            # --- NETTOYAGE ---
-            # Les UpNode/DownNode de la racine sont des nœuds "fake" créés
-            # uniquement pour le calcul de Delta/Gamma à la racine.
-            # Ils ne font pas partie de l'arbre réel (pas de Next_Up/Mid/Down).
-            # On les détache une fois l'information extraite.
+            # Détache les nœuds fake après extraction
             self.Root_Node.UpNode = None
             self.Root_Node.DownNode = None
 
@@ -153,9 +145,6 @@ class Tree:
         self.Root_Node = self.make_node(mkt.SpotPrice)
 
         if pricer.compute_DeltaAndGamma_tree_var:
-            # Nœuds "fake" attachés à la racine : ils ne font pas partie de l'arbre,
-            # ils servent uniquement au calcul de Delta/Gamma à la racine
-            # (méthode Assignment 5 du PDF 2025-2026 : "Add up and down nodes around the root").
             NodeCalcul = self.make_node(mkt.SpotPrice)
             NodeCalcul.Next_Mid = self.make_node(NodeCalcul.forward(mkt, self.dt, 0))
             self.compute_proba(NodeCalcul, NodeCalcul.Next_Mid, mkt, 0)
@@ -644,13 +633,13 @@ class Tree:
     #                         DISPLAY
     # ============================================================
     def display_tree(self, pricer):
-        """Deux passes : (1) collecter positions réelles, (2) remplir DataFrame.
-        Robuste aux dividendes (trunk qui plonge), au pruning, etc.
+        """Parcours BFS par colonne en utilisant UNIQUEMENT les liens
+        Next_Up / Next_Down / Next_Mid (inter-colonnes). On n'utilise
+        PLUS UpNode/DownNode (intra-colonne) qui peuvent être bricolés
+        par la logique de dive du tronc.
 
-        IMPORTANT : à la racine, on n'affiche QUE le nœud racine.
-        Les UpNode/DownNode de la racine sont des nœuds "fake" créés
-        uniquement pour le calcul de Delta/Gamma à la racine (Assignment 5
-        du PDF 2025-2026) — ils ne font pas partie de l'arbre.
+        Résultat garanti : colonne i contient exactement les nœuds
+        atteignables depuis la racine en i sauts, sans doublons.
         """
         if getattr(self, "binom_nodes", None) is not None and self.last_tree_type == "Binomial":
             return self._display_binomial_tree(pricer)
@@ -658,52 +647,50 @@ class Tree:
         start_time_tree = time.time()
         max_depth = pricer.timeSteps
 
-        # ---------- Passe 1 : collecter tous les nœuds avec (row, col) ----------
-        positions = {}   # (row, col) -> node  (row négatif = au-dessus du tronc)
-        current_node = self.Root_Node
-        for step in range(0, max_depth + 1):
-            if current_node is None:
+        # BFS : colonne i = ensemble des nœuds atteignables en i pas
+        columns = {0: [self.Root_Node]}
+        current = [self.Root_Node]
+
+        for step in range(1, max_depth + 1):
+            nxt = []
+            seen = set()
+            for n in current:
+                if n is None:
+                    continue
+                for child in (getattr(n, "Next_Up", None),
+                              getattr(n, "Next_Mid", None),
+                              getattr(n, "Next_Down", None)):
+                    if child is not None and id(child) not in seen:
+                        seen.add(id(child))
+                        nxt.append(child)
+            if not nxt:
                 break
+            columns[step] = nxt
+            current = nxt
 
-            # Toujours : le nœud du tronc (row = 0)
-            positions[(0, step)] = current_node
-            midNode = current_node
+        # ---------- Tri vertical pour un rendu lisible ----------
+        # Pour chaque colonne, on trie par UndPrice décroissant.
+        # Row 0 = plus haut. On centre sur le tronc (le mid).
+        max_cols = max(columns.keys())
+        rows_data = {}  # (row, col) -> UndPrice
+        for step, nodes in columns.items():
+            # On trie par prix décroissant
+            sorted_nodes = sorted(nodes, key=lambda x: -x.UndPrice)
+            n = len(sorted_nodes)
+            # La row 0 est le prix le plus haut, on descend
+            for i, node in enumerate(sorted_nodes):
+                rows_data[(i, step)] = node.UndPrice
 
-            # Colonne 0 : on n'affiche QUE la racine (pas de walk up/down).
-            # Raison : les UpNode/DownNode de la racine sont des nœuds "fake"
-            # utilisés pour le calcul de Delta/Gamma, pas des voisins de l'arbre.
-            if step > 0:
-                node = midNode
-                row = 0
-                while node.UpNode is not None:
-                    node = node.UpNode
-                    row -= 1
-                    positions[(row, step)] = node
-
-                node = midNode
-                row = 0
-                while node.DownNode is not None:
-                    node = node.DownNode
-                    row += 1
-                    positions[(row, step)] = node
-
-            current_node = midNode.Next_Mid
-
-        if not positions:
+        if not rows_data:
             self.df = pd.DataFrame()
             return time.time() - start_time_tree
 
-        # ---------- Passe 2 : allouer la DataFrame aux bonnes dimensions ----------
-        min_row = min(r for (r, c) in positions)
-        max_row = max(r for (r, c) in positions)
-        max_col = max(c for (r, c) in positions)
-        n_rows = max_row - min_row + 1
-
-        self.df = pd.DataFrame(index=range(n_rows),
-                               columns=range(max_col + 1),
+        max_row = max(r for (r, c) in rows_data)
+        self.df = pd.DataFrame(index=range(max_row + 1),
+                               columns=range(max_cols + 1),
                                dtype=object)
-        for (r, c), node in positions.items():
-            self.df.iloc[r - min_row, c] = node.UndPrice
+        for (r, c), v in rows_data.items():
+            self.df.iloc[r, c] = v
 
         return time.time() - start_time_tree
 
