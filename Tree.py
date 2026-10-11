@@ -130,6 +130,14 @@ class Tree:
                 price, self.Root_Node.UpNode.OptPrice,
                 self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
 
+            # --- NETTOYAGE ---
+            # Les UpNode/DownNode de la racine sont des nœuds "fake" créés
+            # uniquement pour le calcul de Delta/Gamma à la racine.
+            # Ils ne font pas partie de l'arbre réel (pas de Next_Up/Mid/Down).
+            # On les détache une fois l'information extraite.
+            self.Root_Node.UpNode = None
+            self.Root_Node.DownNode = None
+
         if condition_Convergence:
             mc_p = pricer.MC_price if pricer.MC_condition else None
             pricer.compute_perf(T, price, time_calculation, BS_Price, mc_p)
@@ -145,6 +153,9 @@ class Tree:
         self.Root_Node = self.make_node(mkt.SpotPrice)
 
         if pricer.compute_DeltaAndGamma_tree_var:
+            # Nœuds "fake" attachés à la racine : ils ne font pas partie de l'arbre,
+            # ils servent uniquement au calcul de Delta/Gamma à la racine
+            # (méthode Assignment 5 du PDF 2025-2026 : "Add up and down nodes around the root").
             NodeCalcul = self.make_node(mkt.SpotPrice)
             NodeCalcul.Next_Mid = self.make_node(NodeCalcul.forward(mkt, self.dt, 0))
             self.compute_proba(NodeCalcul, NodeCalcul.Next_Mid, mkt, 0)
@@ -580,7 +591,6 @@ class Tree:
             columns=["Strike", "Tree Price", "BS Price", "MC Price",
                      "Tree-BS", "Tree-MC", "Slope BS", "Slope Tree", "Slope MC"])
 
-        # --- Sauvegarde de l'état ---
         saved_conv = pricer.Convergence
         saved_disp = pricer.display_tree_bool
         saved_strike = params.strike
@@ -608,7 +618,6 @@ class Tree:
             if not np.isnan(MC_Price):
                 df_strike.at[i, "Tree-MC"] = Tree_price - MC_Price
 
-        # --- Restauration de l'état ---
         pricer.Convergence = saved_conv
         pricer.display_tree_bool = saved_disp
         params.strike = saved_strike
@@ -636,7 +645,13 @@ class Tree:
     # ============================================================
     def display_tree(self, pricer):
         """Deux passes : (1) collecter positions réelles, (2) remplir DataFrame.
-        Robuste aux dividendes (trunk qui plonge), au pruning, etc."""
+        Robuste aux dividendes (trunk qui plonge), au pruning, etc.
+
+        IMPORTANT : à la racine, on n'affiche QUE le nœud racine.
+        Les UpNode/DownNode de la racine sont des nœuds "fake" créés
+        uniquement pour le calcul de Delta/Gamma à la racine (Assignment 5
+        du PDF 2025-2026) — ils ne font pas partie de l'arbre.
+        """
         if getattr(self, "binom_nodes", None) is not None and self.last_tree_type == "Binomial":
             return self._display_binomial_tree(pricer)
 
@@ -649,22 +664,28 @@ class Tree:
         for step in range(0, max_depth + 1):
             if current_node is None:
                 break
+
+            # Toujours : le nœud du tronc (row = 0)
             positions[(0, step)] = current_node
             midNode = current_node
 
-            node = midNode
-            row = 0
-            while node.UpNode is not None:
-                node = node.UpNode
-                row -= 1
-                positions[(row, step)] = node
+            # Colonne 0 : on n'affiche QUE la racine (pas de walk up/down).
+            # Raison : les UpNode/DownNode de la racine sont des nœuds "fake"
+            # utilisés pour le calcul de Delta/Gamma, pas des voisins de l'arbre.
+            if step > 0:
+                node = midNode
+                row = 0
+                while node.UpNode is not None:
+                    node = node.UpNode
+                    row -= 1
+                    positions[(row, step)] = node
 
-            node = midNode
-            row = 0
-            while node.DownNode is not None:
-                node = node.DownNode
-                row += 1
-                positions[(row, step)] = node
+                node = midNode
+                row = 0
+                while node.DownNode is not None:
+                    node = node.DownNode
+                    row += 1
+                    positions[(row, step)] = node
 
             current_node = midNode.Next_Mid
 
