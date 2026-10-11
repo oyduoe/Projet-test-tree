@@ -40,9 +40,8 @@ class Tree:
         # Si on fait la convergence OU l'étude du strike, on a besoin
         # d'une référence BS même si la case n'est pas cochée.
         if pricer.Convergence or pricer.StrikeStudy:
-            from Extension import Extension
             _ext = Extension(mkt, params, pricer)
-            _ext.black_sholes()  # met à jour pricer.BS_price
+            _ext.black_sholes()
 
         if pricer.Convergence:
             for T in range(1, pricer.timeSteps + 1):
@@ -553,9 +552,10 @@ class Tree:
             "tree_type": self.last_tree_type,
             "dt_years": self.dt,
             "sqrt_alpha": getattr(self, "sqrt_alpha", None),
-            "nb_alloc_total": Node.nb_alloc,
-            "nb_nodes_alive_now": Node.live_count() if Node.COUNTING else None,
         }
+        if Node.COUNTING:
+            stats["nb_alloc_total"] = Node.nb_alloc
+            stats["nb_nodes_alive_now"] = Node.live_count()
         if self.Root_Node is not None:
             p = [self.Root_Node.Proba_Up,
                  self.Root_Node.Proba_Mid,
@@ -580,13 +580,16 @@ class Tree:
             columns=["Strike", "Tree Price", "BS Price", "MC Price",
                      "Tree-BS", "Tree-MC", "Slope BS", "Slope Tree", "Slope MC"])
 
+        # --- Sauvegarde de l'état ---
         saved_conv = pricer.Convergence
         saved_disp = pricer.display_tree_bool
+        saved_strike = params.strike
         pricer.Convergence = False
         pricer.display_tree_bool = False
 
-        params.strike = params.strike - 5
-        for T in range(1, StrikeSteps + 1):
+        params.strike = saved_strike - 5
+        T = StrikeSteps
+        for i in range(1, StrikeSteps + 1):
             params.strike += 1
             self.build_tree(mkt, params, pricer, pricer.timeSteps,
                             pricer.BS_price, True, False)
@@ -597,16 +600,18 @@ class Tree:
             if pricer.MC_condition:
                 MC_Price = Extension.monte_carlo_price(50000)
 
-            df_strike.at[T, "Strike"] = params.strike
-            df_strike.at[T, "Tree Price"] = Tree_price
-            df_strike.at[T, "BS Price"] = BS_Price
-            df_strike.at[T, "MC Price"] = MC_Price
-            df_strike.at[T, "Tree-BS"] = Tree_price - BS_Price
+            df_strike.at[i, "Strike"] = params.strike
+            df_strike.at[i, "Tree Price"] = Tree_price
+            df_strike.at[i, "BS Price"] = BS_Price
+            df_strike.at[i, "MC Price"] = MC_Price
+            df_strike.at[i, "Tree-BS"] = Tree_price - BS_Price
             if not np.isnan(MC_Price):
-                df_strike.at[T, "Tree-MC"] = Tree_price - MC_Price
+                df_strike.at[i, "Tree-MC"] = Tree_price - MC_Price
 
+        # --- Restauration de l'état ---
         pricer.Convergence = saved_conv
         pricer.display_tree_bool = saved_disp
+        params.strike = saved_strike
 
         df_strike = self.compute_slope(df_strike, StrikeSteps,
                                        with_mc=pricer.MC_condition)
@@ -630,40 +635,54 @@ class Tree:
     #                         DISPLAY
     # ============================================================
     def display_tree(self, pricer):
+        """Deux passes : (1) collecter positions réelles, (2) remplir DataFrame.
+        Robuste aux dividendes (trunk qui plonge), au pruning, etc."""
         if getattr(self, "binom_nodes", None) is not None and self.last_tree_type == "Binomial":
             return self._display_binomial_tree(pricer)
 
         start_time_tree = time.time()
         max_depth = pricer.timeSteps
-        width = max_depth + 1
-        # 2*max_depth+1 lignes : c'est la hauteur maximale du tronc à maturité
-        self.df = pd.DataFrame(index=range(2 * max_depth + 1),
-                               columns=range(width), dtype=object)
 
-        # On remplit TOUTES les colonnes 0..max_depth (y compris la dernière)
+        # ---------- Passe 1 : collecter tous les nœuds avec (row, col) ----------
+        positions = {}   # (row, col) -> node  (row négatif = au-dessus du tronc)
         current_node = self.Root_Node
         for step in range(0, max_depth + 1):
             if current_node is None:
                 break
-            # mid (colonne du tronc)
-            self.df.iloc[max_depth, step] = current_node.UndPrice
+            positions[(0, step)] = current_node
             midNode = current_node
 
-            row = 1
-            while current_node.UpNode is not None:
-                current_node = current_node.UpNode
-                self.df.iloc[max_depth - row, step] = current_node.UndPrice
-                row += 1
+            node = midNode
+            row = 0
+            while node.UpNode is not None:
+                node = node.UpNode
+                row -= 1
+                positions[(row, step)] = node
 
-            current_node = midNode
-            row = 1
-            while current_node.DownNode is not None:
-                current_node = current_node.DownNode
-                self.df.iloc[max_depth + row, step] = current_node.UndPrice
+            node = midNode
+            row = 0
+            while node.DownNode is not None:
+                node = node.DownNode
                 row += 1
+                positions[(row, step)] = node
 
-            # Colonne suivante : on avance sur le tronc
             current_node = midNode.Next_Mid
+
+        if not positions:
+            self.df = pd.DataFrame()
+            return time.time() - start_time_tree
+
+        # ---------- Passe 2 : allouer la DataFrame aux bonnes dimensions ----------
+        min_row = min(r for (r, c) in positions)
+        max_row = max(r for (r, c) in positions)
+        max_col = max(c for (r, c) in positions)
+        n_rows = max_row - min_row + 1
+
+        self.df = pd.DataFrame(index=range(n_rows),
+                               columns=range(max_col + 1),
+                               dtype=object)
+        for (r, c), node in positions.items():
+            self.df.iloc[r - min_row, c] = node.UndPrice
 
         return time.time() - start_time_tree
 
@@ -671,7 +690,6 @@ class Tree:
         start = time.time()
         nodes = self.binom_nodes
         T = max(i for (i, k) in nodes.keys())
-        # Binomial : T+1 colonnes (0..T), T+1 lignes (k = 0..T)
         self.df = pd.DataFrame(index=range(T + 1), columns=range(T + 1), dtype=object)
         for (i, k), n in nodes.items():
             self.df.iloc[T - k, i] = n.UndPrice

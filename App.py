@@ -110,7 +110,7 @@ if "results" in st.session_state:
     else:
         cols[2].metric("MC Price", "—")
 
-    # --- Temps de calcul en petit, en bas ---
+    # --- Temps en petit, en bas ---
     times = []
     if "TimePricing" in results:
         times.append(f"Tree: {results['TimePricing']:.4f}s")
@@ -165,10 +165,10 @@ if "results" in st.session_state:
         st.markdown("---")
         st.subheader("Statistiques internes du dernier run")
         st.caption(
-            "Ces valeurs servent à diagnostiquer l'arbre : "
+            "Diagnostic de l'arbre : "
             "**tree_type** = type utilisé ; **dt_years** = pas de temps en années ; "
             "**sqrt_alpha** = facteur de branchement ; "
-            "**nb_alloc_total** = nombre total de Node créés depuis le lancement ; "
+            "**nb_alloc_total** = total de Node créés (compté seulement en Debug mode) ; "
             "**nb_nodes_alive_now** = Node encore en mémoire (uniquement si Debug mode) ; "
             "**p_root_up_mid_down** = probabilités (up, mid, down) à la racine — "
             "**p_root_sum doit valoir 1** et **p_root_min doit être ≥ 0**."
@@ -185,7 +185,6 @@ if "results" in st.session_state:
         if df_tree is None or (hasattr(df_tree, "empty") and df_tree.empty):
             st.info("Coche 'Display the Tree' puis relance pour voir l'arbre.")
         else:
-            # --- Bouton de téléchargement ---
             csv = df_tree.to_csv(index=False).encode("utf-8")
             st.download_button(
                 "⬇️ Télécharger l'arbre (CSV)",
