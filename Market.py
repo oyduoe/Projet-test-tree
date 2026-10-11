@@ -11,6 +11,6 @@ class Market:
         return delta_days / 365
 
     def compute_dividend(self, T: int, dt: float) -> float:
-        if (T * dt < self.div_date <= (T + 1) * dt) or (T == 1 and self.div_date <= dt):
+        if (T - 1) * dt < self.div_date <= T * dt:
             return self.dividend
         return 0.0
