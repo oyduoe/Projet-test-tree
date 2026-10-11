@@ -89,46 +89,57 @@ if "results" in st.session_state:
     st.header("Results")
 
     ttm = (input_data["Maturity"] - input_data["PricingDate"]).days / 365
-    msg = (f"{input_data['Exercice']} {input_data['Type']} strike {input_data['Strike']} "
-           f"steps {input_data['Ts']} (r={input_data['RiskFree']}, "
-           f"vol={input_data['Volatility']}%, div={input_data['Dividend']}, T={ttm:.2f}y) — "
-           f"arbre={results.get('DebugInfo', {}).get('tree_type', input_data['TreeType'])}")
-    st.markdown(f"**{msg}**")
+    tree_kind = results.get("DebugInfo", {}).get("tree_type", input_data["TreeType"])
+    st.markdown(
+        f"**{input_data['Exercice']} {input_data['Type']}** strike {input_data['Strike']} "
+        f"| steps {input_data['Ts']} | r={input_data['RiskFree']}% | "
+        f"vol={input_data['Volatility']}% | div={input_data['Dividend']} | T={ttm:.2f}y "
+        f"| arbre = *{tree_kind}*"
+    )
 
-    if "TreePrice" in results:
-        c1, c2 = st.columns(2)
-        c1.metric("Option Price", f"{results['TreePrice']:.6f}")
-        c2.metric("Calculation Time", f"{results['TimePricing']:.4f} s")
-
-    if "Tree Display Time" in results:
-        st.write(f"Tree Display Time : {results['Tree Display Time']:.4f} s")
-    if "New TS" in results:
-        st.write(f"New Time Step : {results['New TS']:.0f}")
-
+    # --- Prix en ligne ---
+    cols = st.columns(3)
+    cols[0].metric("Tree Price",
+                   f"{results['TreePrice']:.4f}" if "TreePrice" in results else "—")
     if input_data["BSCondition"] and "BS Price" in results:
-        st.subheader("Black-Scholes")
-        c1, c2 = st.columns(2)
-        c1.metric("BS Price", f"{results['BS Price']:.4f}")
-        c2.metric("BS Time", f"{results['BS_Time']:.4f} s")
-
+        cols[1].metric("BS Price", f"{results['BS Price']:.4f}")
+    else:
+        cols[1].metric("BS Price", "—")
     if input_data["MCCondition"] and "MC Price" in results:
-        st.subheader("Monte-Carlo")
-        c1, c2 = st.columns(2)
-        c1.metric("MC Price", f"{results['MC Price']:.4f}")
-        c2.metric("MC Time", f"{results['MCTime']:.4f} s")
+        cols[2].metric("MC Price", f"{results['MC Price']:.4f}")
+    else:
+        cols[2].metric("MC Price", "—")
 
+    # --- Temps de calcul en petit, en bas ---
+    times = []
+    if "TimePricing" in results:
+        times.append(f"Tree: {results['TimePricing']:.4f}s")
+    if "BS_Time" in results:
+        times.append(f"BS: {results['BS_Time']:.4f}s")
+    if "MCTime" in results:
+        times.append(f"MC: {results['MCTime']:.4f}s")
+    if "Tree Display Time" in results:
+        times.append(f"Display: {results['Tree Display Time']:.4f}s")
+    if times:
+        st.caption("⏱ " + " · ".join(times))
+
+    if "New TS" in results:
+        st.caption(f"🔧 New Time Step (spread error) : {results['New TS']:.0f}")
+
+    # --- Convergence ---
     if "ConvergenceFig" in results and results["ConvergenceFig"] is not None:
         st.subheader("Convergence")
         st.pyplot(results["ConvergenceFig"])
 
+    # --- Strike Study ---
     if "StrikeStudyFig" in results and results["StrikeStudyFig"] is not None:
         st.subheader("Strike Study")
         st.pyplot(results["StrikeStudyFig"])
 
     # ================ TABS ================
     st.markdown("---")
-    tab1, tab2, tab3, tab4 = st.tabs(
-        ["📊 Greeks", "🧪 Debug / Vérifications", "🌡️ Heatmap", "📈 Arbre"])
+    tab1, tab2, tab3 = st.tabs(
+        ["📊 Greeks", "🧪 Debug / Vérifications", "📈 Arbre & Heatmap"])
 
     with tab1:
         if "GreeksTable" in results:
@@ -136,15 +147,13 @@ if "results" in st.session_state:
             csv = results["GreeksTable"].to_csv().encode()
             st.download_button("Télécharger Greeks (CSV)", csv,
                                file_name="greeks.csv", mime="text/csv")
-            c1, c2 = st.columns(2)
-            c1.metric("Temps sans Greeks", f"{results.get('TimeNoGreeks', 0):.4f} s")
-            c2.metric("Temps avec Greeks", f"{results.get('TimeGreeks', 0):.4f} s")
+            st.caption(f"⏱ Time with Greeks: {results.get('TimeGreeks', 0):.4f}s")
         else:
-            st.info("Coche 'Calculate the Greeks'.")
+            st.info("Coche 'Calculate the Greeks' pour afficher le tableau.")
 
     with tab2:
         st.subheader("Vérifications théoriques automatiques")
-        st.caption("⚠️ Ces tests relancent le pricer plusieurs fois. Ça peut prendre du temps.")
+        st.caption("⚠️ Ces tests relancent le pricer plusieurs fois (peut être lent).")
         if st.button("Lancer les tests", key="run_debug"):
             dbg = DebugChecks(run_calculations, st.session_state["input_data"])
             with st.spinner("Tests en cours..."):
@@ -162,24 +171,20 @@ if "results" in st.session_state:
         if info:
             st.json(info)
         else:
-            st.warning("Active 'Debug mode' pour voir les statistiques.")
+            st.warning("Active 'Debug mode' pour voir les stats.")
 
     with tab3:
-        st.subheader("Heatmap de l'arbre")
         df_tree = results.get("TreeDf")
-        if df_tree is not None and not df_tree.empty:
+        if df_tree is None or (hasattr(df_tree, "empty") and df_tree.empty):
+            st.info("Coche 'Display the Tree' puis relance.")
+        else:
+            st.subheader("Heatmap (couleur = prix sous-jacent)")
             fig, ax = plt.subplots(figsize=(12, 6))
             data = df_tree.astype(float).values
             im = ax.imshow(data, aspect="auto", cmap="viridis", interpolation="nearest")
-            plt.colorbar(im, ax=ax, label="Valeur")
-            ax.set_xlabel("Time step"); ax.set_ylabel("Node index")
-            ax.set_title("Arbre (couleur = prix sous-jacent)")
+            plt.colorbar(im, ax=ax, label="S")
+            ax.set_xlabel("Time step")
+            ax.set_ylabel("Node index")
             st.pyplot(fig)
-        else:
-            st.info("Coche 'Display the Tree' pour voir la heatmap.")
-
-    with tab4:
-        if "TreeDf" in results:
-            st.dataframe(results["TreeDf"])
-        else:
-            st.info("Coche 'Display the Tree'.")
+            st.subheader("Tableau brut")
+            st.dataframe(df_tree)
