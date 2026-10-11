@@ -1,5 +1,5 @@
 import math
-from VectorImage import VectorImage
+from Debug import VectorImage
 
 
 class TreeImage(VectorImage):

@@ -1,36 +1,50 @@
 import math
-from Market import Market
-from OptionParameters import OptionParameters
 
 
 class Node:
+    # Compteurs (class-level, ne ralentissent QUE si COUNTING=True)
+    COUNTING: bool = False
+    nb_alloc: int = 0
+    max_live: int = 0
+
+    __slots__ = (
+        "UndPrice", "Payoff",
+        "Next_Up", "Next_Down", "Next_Mid",
+        "nprec", "UpNode", "DownNode", "MidNode",
+        "Proba_Up", "Proba_Down", "Proba_Mid",
+        "Cum_Proba", "OptPrice",
+    )
+
+    def __new__(cls, *args, **kwargs):
+        if cls.COUNTING:
+            cls.nb_alloc += 1
+        return super().__new__(cls)
+
     def __init__(self):
-        self.UndPrice: float
-        self.Payoff: float
-        self.Next_Up = None
-        self.Next_Down = None
-        self.Next_Mid = None
+        self.UndPrice = 0.0
+        self.Payoff = 0.0
+        self.Next_Up = self.Next_Down = self.Next_Mid = None
         self.nprec = None
-        self.UpNode = None
-        self.DownNode = None
-        self.MidNode = None
-        self.Proba_Up: float = 0.00
-        self.Proba_Down: float = 0.00
-        self.Proba_Mid: float = 0.00
-        self.Cum_Proba: float = 0.00
-        self.OptPrice: float
+        self.UpNode = self.DownNode = self.MidNode = None
+        self.Proba_Up = 0.0
+        self.Proba_Down = 0.0
+        self.Proba_Mid = 0.0
+        self.Cum_Proba = 0.0
+        self.OptPrice = 0.0
 
-    def forward(self, mkt: Market, dt: float, div: float):
-        """Valeur forward du nœud.
+    # ---- API de comptage (à appeler seulement en debug) ----
+    @classmethod
+    def live_count(cls) -> int:
+        import gc
+        return sum(1 for o in gc.get_objects() if isinstance(o, cls))
 
-        - Mode Continuous : drift (r - q) où q = D / S.
-        - Mode Discrete   : drift r, puis soustraction du cash `div`
-                            au pas exact du dividende.
-        """
-        div_type = getattr(mkt, 'dividend_type', 'Discrete')
-        if div_type == "Continuous":
-            q = mkt.dividend_yield()
-            return self.UndPrice * math.exp((mkt.RiskFree - q) * dt)
+    @classmethod
+    def reset_counters(cls):
+        cls.nb_alloc = 0
+        cls.max_live = 0
+
+    # ---- Méthodes métier ----
+    def forward(self, mkt, dt: float, div: float):
         return self.UndPrice * math.exp(mkt.RiskFree * dt) - div
 
     def init_node(self, market_value: float):
@@ -87,12 +101,15 @@ class Node:
             val_down = candidate_mid.Next_Down.OptPrice
             candidate_mid.Next_Down = None
 
+        disc = math.exp(-mkt.RiskFree * tree.dt)
         if parameters.Exercice == "European":
             candidate_mid.OptPrice = (val_up * candidate_mid.Proba_Up +
-                                       val_mid * candidate_mid.Proba_Mid +
-                                       val_down * candidate_mid.Proba_Down) * math.exp(-mkt.RiskFree * tree.dt)
-        elif parameters.Exercice == "American":
-            candidate_mid.OptPrice = max(parameters.Vi(candidate_mid.UndPrice),
-                                          (val_up * candidate_mid.Proba_Up +
-                                           val_mid * candidate_mid.Proba_Mid +
-                                           val_down * candidate_mid.Proba_Down) * math.exp(-mkt.RiskFree * tree.dt))
+                                      val_mid * candidate_mid.Proba_Mid +
+                                      val_down * candidate_mid.Proba_Down) * disc
+        else:
+            candidate_mid.OptPrice = max(
+                parameters.Vi(candidate_mid.UndPrice),
+                (val_up * candidate_mid.Proba_Up +
+                 val_mid * candidate_mid.Proba_Mid +
+                 val_down * candidate_mid.Proba_Down) * disc,
+            )

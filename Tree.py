@@ -2,53 +2,44 @@ import math
 import time
 import numpy as np
 import pandas as pd
-from pandas.core.interchange.dataframe_protocol import DataFrame
 from Node import Node
 from Market import Market
 from OptionParameters import OptionParameters
 from Pricer import Pricer
 from Extension import Extension
-from Greeks import finite_difference_greeks
-
-
-MAX_SVG_DEPTH = 40
-MAX_TS_GREEKS = 200
-MAX_TS_STRIKE_STUDY = 20
-MAX_CONVERGENCE_POINTS = 60
 
 
 class Tree:
     def __init__(self):
-        self.dt: float = 0.0
-        self.Alpha: float = 0.0
-        self.Root_Node: Node = None
-        self.Market: Market = None
-        self.candidateMid: Node = None
-        self.Final_Node: Node = None
-        self.tronc: Node = None
+        self.dt = 0.0
+        self.Alpha = 1.0
+        self.sqrt_alpha = 1.0
+        self.Root_Node = None
+        self.Market = None
+        self.candidateMid = None
+        self.Final_Node = None
+        self.tronc = None
         self.ModifExMid = False
-        self.isTrunc: bool = True
-        self.Convergence_results: DataFrame = None
+        self.isTrunc = True
+        self.Convergence_results = None
         self.price_results = {}
-        self.nnext: Node = None
-        self.nUp: Node = None
-        self.nDown: Node = None
-        self.df: DataFrame = None
-        self.svg_str: str = None
-        self._tree_snapshot: dict = None
+        self.nnext = self.nUp = self.nDown = None
+        self.df = None
         self.Convergence_fig = None
-        self.time_calculation_tree = 0.00
+        self.time_calculation_tree = 0.0
+        self.last_tree_type = "?"
+        self.binom_band = None
+        self.binom_nodes = None
 
-    # ------------------------------------------------------------------
-    def init(self, mkt, params, pricer, IsVega, ext=None, binom=None):
+    # ============================================================
+    #                         INIT
+    # ============================================================
+    def init(self, mkt, params, pricer, IsVega):
+        self.Market = mkt
         if pricer.Convergence:
-            step_values = self._convergence_steps(pricer.timeSteps,
-                                                   MAX_CONVERGENCE_POINTS)
-            print(f"[Convergence] {len(step_values)} points calculés "
-                  f"(max = {step_values[-1]})")
-            for T in step_values:
-                self.build_tree(mkt, params, pricer, T, pricer.BS_price, True, IsVega,
-                                ext=ext, binom=binom)
+            for T in range(1, pricer.timeSteps + 1):
+                print(f"Calcul du prix pour {T} Time Steps")
+                self.build_tree(mkt, params, pricer, T, pricer.BS_price, True, IsVega)
             self.Convergence_fig = pricer.create_plot_convergence()
         else:
             if pricer.gap != 0:
@@ -57,32 +48,91 @@ class Tree:
             else:
                 self.build_tree(mkt, params, pricer, pricer.timeSteps, pricer.BS_price, False, IsVega)
 
-    def _convergence_steps(self, max_ts, max_points):
-        """Renvoie une liste de steps à évaluer pour la Convergence.
+    # ============================================================
+    #                       DISPATCHER
+    # ============================================================
+    def build_tree(self, mkt, params, pricer, T, BS_Price, condition_Convergence, isVega):
+        tree_type = getattr(pricer, "TreeType", "Auto")
+        ttm = (params.DateMaturity - pricer.PricingDate).days / 365
+        has_div = (mkt.dividend > 0) and (0 < mkt.div_date < ttm)
 
-        - Si max_ts <= max_points : tous les pas.
-        - Sinon : les 20 premiers + des points répartis jusqu'à max_ts.
-        On garde la finesse au début (où la courbe bouge le plus).
-        """
-        if max_ts <= max_points:
-            return list(range(1, max_ts + 1))
+        if tree_type == "Binomial" and has_div:
+            print("Warning: Binomial sélectionné mais dividende discret → Trinomial forcé")
+            tree_type = "Trinomial"
+        elif tree_type.startswith("Auto"):
+            tree_type = "Trinomial" if has_div else "Binomial"
 
-        base = list(range(1, 21))  # 1..20
-        remaining = max_ts - 20
-        n_rest = max(1, max_points - 20)
-        rest = sorted(set(int(round(x))
-                          for x in np.linspace(21, max_ts, n_rest)))
-        return sorted(set(base + rest + [max_ts]))
+        self.last_tree_type = tree_type
 
-    def make_node(self, market_values):
+        if tree_type == "Binomial":
+            return self._build_binomial_tree(mkt, params, pricer, T, BS_Price,
+                                             condition_Convergence, isVega)
+        return self._build_trinomial_tree(mkt, params, pricer, T, BS_Price,
+                                          condition_Convergence, isVega)
+
+    # ============================================================
+    #                       HELPERS
+    # ============================================================
+    def make_node(self, market_values: float) -> Node:
         new_node = Node()
         new_node.init_node(market_values)
         return new_node
 
-    def init_root_node_and_parameters(self, mkt, parameters, pricer, T):
-        self.dt = ((parameters.DateMaturity - pricer.PricingDate).days / T) / 365
+    def display_results(self, pricer, time_calculation, price, time_calculation_tree, newTs):
+        self.price_results = {"TreePrice": price, "TimePricing": time_calculation}
+        if newTs != 0:
+            self.price_results["New TS"] = newTs
+        if pricer.display_tree_bool:
+            self.price_results["Tree Display Time"] = time_calculation_tree
+        if pricer.BS_condition:
+            self.price_results['BS Price'] = pricer.BS_price
+            self.price_results['BS_Time'] = pricer.BS_Time
+            self.price_results['TreeGapBS'] = price - pricer.BS_price
+            self.price_results['TreeGapBSTime'] = time_calculation - pricer.BS_Time
+        if pricer.MC_condition:
+            self.price_results['MC Price'] = pricer.MC_price
+            self.price_results['MCTime'] = pricer.MC_Time
+            self.price_results['MCGapTree'] = pricer.MC_price - price
+            self.price_results['MCGapTreeTime'] = time_calculation - pricer.MC_Time
+
+    # ============================================================
+    #                    TRINOMIAL (le tien)
+    # ============================================================
+    def _build_trinomial_tree(self, mkt, params, pricer, T, BS_Price,
+                              condition_Convergence, isVega):
+        start_time = time.time()
+        self.init_root_node_and_parameters(mkt, params, pricer, T)
+
+        for i in range(1, T + 1):
+            self.build_columns(self.candidateMid, mkt, params, i, pricer)
+
+        if pricer.display_tree_bool:
+            self.time_calculation_tree = self.display_tree(pricer)
+
+        self.candidateMid.price(self.candidateMid, params, mkt, self)
+        price = self.Root_Node.OptPrice
+        time_calculation = time.time() - start_time
+
+        if pricer.compute_DeltaAndGamma_tree_var:
+            pricer.DeltaTree = self.Compute_DeltaTree(
+                self.Root_Node.UpNode.OptPrice, self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
+            pricer.GammaTree = self.Compute_GammaTree(
+                price, self.Root_Node.UpNode.OptPrice,
+                self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
+
+        if condition_Convergence:
+            pricer.compute_perf(T, price, time_calculation, BS_Price)
+        if not isVega:
+            self.display_results(pricer, time_calculation, price,
+                                 self.time_calculation_tree, pricer.newTs)
+        return self.Root_Node
+
+    def init_root_node_and_parameters(self, mkt, params, pricer, T):
+        self.dt = ((params.DateMaturity - pricer.PricingDate).days / T) / 365
         self.Alpha = math.exp(mkt.volatility * math.sqrt(3 * self.dt))
+        self.sqrt_alpha = math.sqrt(self.Alpha)
         self.Root_Node = self.make_node(mkt.SpotPrice)
+
         if pricer.compute_DeltaAndGamma_tree_var:
             NodeCalcul = self.make_node(mkt.SpotPrice)
             NodeCalcul.Next_Mid = self.make_node(NodeCalcul.forward(mkt, self.dt, 0))
@@ -96,136 +146,6 @@ class Tree:
             self.Root_Node.Cum_Proba = 1
         self.candidateMid = self.Root_Node
 
-    def _snapshot_tree(self, max_depth):
-        root = self.Root_Node
-        if root is None:
-            return None
-        columns = [[root]]
-        edges = []
-        current = [root]
-        seen = {id(root)}
-        for _ in range(max_depth):
-            nxt = []
-            for node in current:
-                for attr in ("Next_Up", "Next_Mid", "Next_Down"):
-                    child = getattr(node, attr, None)
-                    if child is None:
-                        continue
-                    edges.append((node, attr, child))
-                    if id(child) not in seen:
-                        nxt.append(child)
-                        seen.add(id(child))
-            if not nxt:
-                break
-            nxt.sort(key=lambda x: x.UndPrice, reverse=True)
-            columns.append(nxt)
-            current = nxt
-        return {"columns": columns, "edges": edges}
-
-    def build_tree(self, mkt, parameters, pricer, T, BS_Price,
-                   condition_Convergence, isVega, ext=None, binom=None):
-        start_time = time.time()
-        self.init_root_node_and_parameters(mkt, parameters, pricer, T)
-        for i in range(1, T + 1):
-            self.build_columns(self.candidateMid, mkt, parameters, i, pricer)
-
-        snapshot_needed = (pricer.display_tree_bool
-                           and (not condition_Convergence or T == pricer.timeSteps))
-        if snapshot_needed:
-            self._tree_snapshot = self._snapshot_tree(min(MAX_SVG_DEPTH, T))
-
-        self.candidateMid.price(self.candidateMid, parameters, mkt, self)
-        price = self.Root_Node.OptPrice
-        end_time = time.time()
-        time_calculation = end_time - start_time
-
-        if snapshot_needed:
-            self.time_calculation_tree = self.display_tree(pricer, parameters)
-
-        if pricer.compute_DeltaAndGamma_tree_var:
-            pricer.DeltaTree = self.Compute_DeltaTree(
-                self.Root_Node.UpNode.OptPrice, self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
-            pricer.GammaTree = self.Compute_GammaTree(
-                price, self.Root_Node.UpNode.OptPrice,
-                self.Root_Node.DownNode.OptPrice, mkt.SpotPrice)
-
-        if condition_Convergence:
-            mc_price = None
-            binom_price = None
-            if ext is not None and pricer.MC_condition:
-                saved_ts = pricer.timeSteps
-                saved_mc = pricer.MC_price
-                pricer.timeSteps = T
-                np.random.seed(42)
-                try:
-                    mc_price = float(ext.monte_carlo_price(1500))
-                except Exception:
-                    mc_price = None
-                pricer.timeSteps = saved_ts
-                pricer.MC_price = saved_mc
-            if binom is not None and getattr(pricer, 'Binom_condition', False):
-                try:
-                    binom_price = float(binom.price_option(T))
-                except Exception:
-                    binom_price = None
-            pricer.compute_perf(T, price, time_calculation, BS_Price,
-                                mc_price=mc_price, binom_price=binom_price)
-
-        if not isVega:
-            self.display_results(pricer, time_calculation, price,
-                                 self.time_calculation_tree, pricer.newTs)
-
-    def display_results(self, pricer, time_calculation, price, time_calculation_tree, newTs):
-        self.price_results = {'TreePrice': price, 'TimePricing': time_calculation}
-        if newTs != 0:
-            self.price_results["New TS"] = newTs
-        if pricer.display_tree_bool:
-            self.price_results["Tree Display Time"] = time_calculation_tree
-        if pricer.BS_condition:
-            self.price_results['BS Price'] = pricer.BS_price
-            self.price_results['BS_Time'] = pricer.BS_Time
-            self.price_results['TreeGapBS'] = price - pricer.BS_price
-        if pricer.MC_condition:
-            self.price_results['MC Price'] = pricer.MC_price
-            self.price_results['MCTime'] = pricer.MC_Time
-            self.price_results['MCGapTree'] = pricer.MC_price - price
-        if getattr(pricer, 'Binom_condition', False):
-            self.price_results['Binom Price'] = pricer.Binom_price
-            self.price_results['Binom_Time'] = pricer.Binom_Time
-            self.price_results['TreeGapBinom'] = price - pricer.Binom_price
-
-    # ------------------------------------------------------------------
-    def compute_greeks_tree(self, params, pricer, mkt):
-        saved_ts = pricer.timeSteps
-        if saved_ts > MAX_TS_GREEKS:
-            pricer.timeSteps = MAX_TS_GREEKS
-
-        def price_fn(m, p, pr):
-            saved = (pr.Convergence, pr.display_tree_bool, pr.BS_condition,
-                     pr.MC_condition, pr.compute_DeltaAndGamma_tree_var,
-                     getattr(pr, 'Binom_condition', False))
-            pr.Convergence = False
-            pr.display_tree_bool = False
-            pr.BS_condition = False
-            pr.MC_condition = False
-            pr.compute_DeltaAndGamma_tree_var = False
-            if hasattr(pr, 'Binom_condition'):
-                pr.Binom_condition = False
-            self.init(m, p, pr, True)
-            price = self.Root_Node.OptPrice
-            (pr.Convergence, pr.display_tree_bool, pr.BS_condition,
-             pr.MC_condition, pr.compute_DeltaAndGamma_tree_var, bc) = saved
-            if hasattr(pr, 'Binom_condition'):
-                pr.Binom_condition = bc
-            return price
-
-        try:
-            result = finite_difference_greeks(price_fn, mkt, params, pricer)
-        finally:
-            pricer.timeSteps = saved_ts
-        return result
-
-    # ------------------------------------------------------------------
     def build_triple(self, candidateMid, mkt, div):
         prix_forward = candidateMid.forward(mkt, self.dt, div)
         self.build_mid(candidateMid, prix_forward, mkt, div)
@@ -254,32 +174,32 @@ class Tree:
             candidateMid.Next_Down = newnode
             self.nDown = newnode
 
-    def build_columns(self, candidateMid, mkt, parameters, i, pricer):
+    def build_columns(self, candidateMid, mkt, params, i, pricer):
         div = mkt.compute_dividend(i, self.dt)
         self.isTrunc = True
         self.build_triple(candidateMid, mkt, div)
         self.tronc = candidateMid
-        self.build_up_and_down(candidateMid, mkt, parameters, pricer, div, "up")
+        self.build_up_and_down(candidateMid, mkt, params, pricer, div, "up")
         if not self.isTrunc:
             self.nUp = candidateMid.Next_Up
             self.nnext = candidateMid.Next_Mid
             self.nDown = candidateMid.Next_Down
-            self.build_up_and_down(candidateMid, mkt, parameters, pricer, div, "down")
+            self.build_up_and_down(candidateMid, mkt, params, pricer, div, "down")
         candidateMid = self.tronc
         self.candidateMid = candidateMid.Next_Mid
 
-    def build_up_and_down(self, candidateMid, mkt, parameters, pricer, div, direction):
+    def build_up_and_down(self, candidateMid, mkt, params, pricer, div, direction):
         if direction == "up":
             while candidateMid.UpNode is not None:
                 self.isTrunc = False
-                self.next_forward(candidateMid.UpNode, mkt, parameters, pricer, direction, div)
+                self.next_forward(candidateMid.UpNode, mkt, params, pricer, direction, div)
                 candidateMid = candidateMid.UpNode
         elif direction == "down":
             while candidateMid.DownNode is not None:
-                self.next_forward(candidateMid.DownNode, mkt, parameters, pricer, direction, div)
+                self.next_forward(candidateMid.DownNode, mkt, params, pricer, direction, div)
                 candidateMid = candidateMid.DownNode
 
-    def next_forward(self, candidateMid, mkt, parameters, pricer, direction, div):
+    def next_forward(self, candidateMid, mkt, params, pricer, direction, div):
         isUp = (direction == "up")
         if candidateMid.Cum_Proba > pricer.PruningTreshold:
             self.ModifExMid = False
@@ -319,17 +239,25 @@ class Tree:
 
     def compute_transition_up_node(self, newnode, ModifExMid, IsDiveTime):
         if IsDiveTime:
-            self.nnext = newnode; self.nDown = self.nUp; self.nUp = self.nnext
+            self.nnext = newnode
+            self.nDown = self.nUp
+            self.nUp = self.nnext
         elif not ModifExMid:
-            self.nDown = self.nnext; self.nnext = self.nUp; self.nUp = newnode
+            self.nDown = self.nnext
+            self.nnext = self.nUp
+            self.nUp = newnode
         else:
             self.nUp = newnode
 
     def compute_transition_down_node(self, newnode, ModifExMid, IsDiveTime):
         if IsDiveTime:
-            self.nnext = newnode; self.nUp = self.nDown; self.nDown = self.nnext
+            self.nnext = newnode
+            self.nUp = self.nDown
+            self.nDown = self.nnext
         elif not ModifExMid:
-            self.nUp = self.nnext; self.nnext = self.nDown; self.nDown = newnode
+            self.nUp = self.nnext
+            self.nnext = self.nDown
+            self.nDown = newnode
         else:
             self.nDown = newnode
 
@@ -379,148 +307,321 @@ class Tree:
             self.ModifExMid = True
 
     def compute_proba(self, candidateMid, nnext, mkt, div):
-        div_type = getattr(mkt, 'dividend_type', 'Discrete')
-
-        if div_type == "Continuous":
-            q = mkt.dividend_yield()
-            drift = mkt.RiskFree - q
-            esperance = candidateMid.UndPrice * np.exp(drift * self.dt)
-            variance = (candidateMid.UndPrice ** 2) * np.exp(2 * drift * self.dt) * (
-                    np.exp(mkt.volatility ** 2 * self.dt) - 1)
-        else:
-            esperance = candidateMid.UndPrice * np.exp(mkt.RiskFree * self.dt) - div
-            variance = (candidateMid.UndPrice ** 2) * np.exp(2 * mkt.RiskFree * self.dt) * (
-                    np.exp(mkt.volatility ** 2 * self.dt) - 1)
+        esperance = candidateMid.UndPrice * np.exp(mkt.RiskFree * self.dt) - div
+        variance = (candidateMid.UndPrice ** 2) * np.exp(2 * mkt.RiskFree * self.dt) * (
+                np.exp(mkt.volatility ** 2 * self.dt) - 1)
 
         candidateMid.Proba_Down = ((nnext.UndPrice ** -2 * (variance + esperance ** 2) - 1 -
-                                    (self.Alpha + 1) * (nnext.UndPrice ** -1 * esperance - 1)) /
+                                   (self.Alpha + 1) * (nnext.UndPrice ** -1 * esperance - 1)) /
                                    ((1 - self.Alpha) * (self.Alpha ** -2 - 1)))
-        candidateMid.Proba_Up = (nnext.UndPrice ** -1 * esperance - 1 -
-                                 (self.Alpha ** -1 - 1) * candidateMid.Proba_Down) / (self.Alpha - 1)
+        candidateMid.Proba_Up = (nnext.UndPrice ** -1 * esperance - 1 - (self.Alpha ** -1 - 1) *
+                                 candidateMid.Proba_Down) / (self.Alpha - 1)
         candidateMid.Proba_Mid = 1 - candidateMid.Proba_Down - candidateMid.Proba_Up
-        if candidateMid.Proba_Down < 0 or candidateMid.Proba_Up < 0 or candidateMid.Proba_Mid < 0:
-            print("Probabilités négatives détectées")
+
+        if candidateMid.Proba_Down < -1e-12 or candidateMid.Proba_Up < -1e-12 \
+                or candidateMid.Proba_Mid < -1e-12:
+            print(f"⚠ Probabilités négatives : up={candidateMid.Proba_Up:.6f} "
+                  f"mid={candidateMid.Proba_Mid:.6f} down={candidateMid.Proba_Down:.6f}")
 
     def Compute_DeltaTree(self, P1, P_1, S0):
         return (P1 - P_1) / ((self.Alpha * S0) - (S0 / self.Alpha))
 
     def Compute_GammaTree(self, P, P1, P_1, S0):
-        return ((((P1 - P) / ((self.Alpha * S0) - S0)) -
-                 ((P - P_1) / (S0 - (S0 / self.Alpha))))
+        return ((((P1 - P) / ((self.Alpha * S0) - S0)) - ((P - P_1) / (S0 - (S0 / self.Alpha))))
                 / (((self.Alpha * S0) - (S0 / self.Alpha)) / 2))
 
-    # ------------------------------------------------------------------
-    def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Ext,
-                            binom=None, with_mc=False):
-        columns = ["Strike", "Tree Price", "BS Price", "Tree-BS",
-                   "Slope BS", "Slope Tree"]
-        if binom is not None:
-            columns += ["Binom Price", "Tree-Binom", "Slope Binom"]
-        if with_mc:
-            columns += ["MC Price", "Tree-MC", "Slope MC"]
+    # ============================================================
+    #                   BINOMIAL (band + rolling)
+    # ============================================================
+    def _build_binomial_tree(self, mkt, params, pricer, T, BS_Price,
+                             condition_Convergence, isVega):
+        start_time = time.time()
 
-        df_strike = pd.DataFrame(0.0, index=range(StrikeSteps + 1), columns=columns)
-        # Initialise les slopes à NaN (le premier et le dernier point ne
-        # peuvent pas être calculés par différences centrées, donc on ne
-        # veut pas les tracer comme s'ils valaient 0).
-        for col in df_strike.columns:
-            if col.startswith("Slope "):
-                df_strike[col] = np.nan
+        self.dt = ((params.DateMaturity - pricer.PricingDate).days / T) / 365
+        exp_s2dt = math.exp(mkt.volatility ** 2 * self.dt)
+        half = (1 + exp_s2dt) / 2
+        self.sqrt_alpha = half + math.sqrt(max(half ** 2 - 1.0, 0.0))
+        self.Alpha = self.sqrt_alpha
 
-        saved_conv = pricer.Convergence
-        saved_tree = pricer.display_tree_bool
-        saved_bs = pricer.BS_condition
-        saved_mc = pricer.MC_condition
-        saved_dg = pricer.compute_DeltaAndGamma_tree_var
-        saved_binom = getattr(pricer, 'Binom_condition', False)
-        saved_ts = pricer.timeSteps
+        p_up = 1.0 / (self.sqrt_alpha + 1.0)
+        p_down = self.sqrt_alpha / (self.sqrt_alpha + 1.0)
+        exp_r_dt = math.exp(mkt.RiskFree * self.dt)
+        disc = math.exp(-mkt.RiskFree * self.dt)
+        S0 = mkt.SpotPrice
+        threshold = max(getattr(pricer, "PruningTreshold", 0.0), 0.0)
 
+        # -- Forward : bandes autorisées + cum_proba --
+        band = [[] for _ in range(T + 1)]
+        cum = {(0, 0): 1.0}
+        band[0] = [0]
+
+        for i in range(1, T + 1):
+            for k in range(i + 1):
+                c = 0.0
+                if (i - 1, k - 1) in cum:
+                    c += cum[(i - 1, k - 1)] * p_up
+                if (i - 1, k) in cum:
+                    c += cum[(i - 1, k)] * p_down
+                if i < T and c < threshold:
+                    continue
+                band[i].append(k)
+                cum[(i, k)] = c
+            # libère la colonne i-2
+            if i >= 2:
+                for key in [key for key in cum if key[0] <= i - 2]:
+                    del cum[key]
+
+        # -- Backward : rolling 2 colonnes --
+        def price_at(i, k):
+            return (S0 * (self.sqrt_alpha * exp_r_dt) ** k
+                    * (exp_r_dt / self.sqrt_alpha) ** (i - k))
+
+        V_prev = {k: params.Vi(price_at(T, k)) for k in band[T]}
+
+        for i in range(T - 1, -1, -1):
+            V_curr = {}
+            for k in band[i]:
+                has_up = (k + 1) in V_prev
+                has_down = k in V_prev
+                if has_up and has_down:
+                    val = disc * (p_up * V_prev[k + 1] + p_down * V_prev[k])
+                elif has_up:
+                    val = disc * V_prev[k + 1]
+                elif has_down:
+                    val = disc * V_prev[k]
+                else:
+                    val = 0.0
+                if params.Exercice == "American":
+                    val = max(val, params.Vi(price_at(i, k)))
+                V_curr[k] = val
+            V_prev = V_curr
+
+        price = V_prev.get(0, 0.0)
+        time_calculation = time.time() - start_time
+
+        # -- Matérialisation Node (petits arbres) pour delta/gamma/display --
+        if pricer.compute_DeltaAndGamma_tree_var or pricer.display_tree_bool:
+            self._materialize_binomial(band, price_at, p_up, p_down, params, mkt)
+
+        if pricer.compute_DeltaAndGamma_tree_var and self.Root_Node.Next_Up is not None:
+            P_up = self.Root_Node.Next_Up.OptPrice
+            P_down = self.Root_Node.Next_Down.OptPrice
+            S_up = self.Root_Node.Next_Up.UndPrice
+            S_down = self.Root_Node.Next_Down.UndPrice
+            pricer.DeltaTree = (P_up - P_down) / (S_up - S_down)
+            pricer.GammaTree = 2 * ((P_up - price) / (S_up - S0)
+                                    - (price - P_down) / (S0 - S_down)) / (S_up - S_down)
+
+        if condition_Convergence:
+            pricer.compute_perf(T, price, time_calculation, BS_Price)
+        if not isVega:
+            self.display_results(pricer, time_calculation, price,
+                                 self.time_calculation_tree, pricer.newTs)
+
+        self.binom_band = band
+        self.candidateMid = self.Root_Node
+        return self.Root_Node if self.Root_Node else self.make_node(price)
+
+    def _materialize_binomial(self, band, price_at, p_up, p_down, params, mkt):
+        T = len(band) - 1
+        nodes = {}
+        root = self.make_node(price_at(0, 0))
+        root.Proba_Up, root.Proba_Down, root.Proba_Mid = p_up, p_down, 0.0
+        root.Cum_Proba = 1.0
+        nodes[(0, 0)] = root
+        self.Root_Node = root
+
+        for i in range(1, T + 1):
+            for k in band[i]:
+                n = self.make_node(price_at(i, k))
+                n.Proba_Up, n.Proba_Down, n.Proba_Mid = p_up, p_down, 0.0
+                n.Cum_Proba = 0.0
+                nodes[(i, k)] = n
+                if (i - 1, k - 1) in nodes:
+                    nodes[(i - 1, k - 1)].Next_Up = n
+                    n.Cum_Proba += nodes[(i - 1, k - 1)].Cum_Proba * p_up
+                if (i - 1, k) in nodes:
+                    nodes[(i - 1, k)].Next_Down = n
+                    n.Cum_Proba += nodes[(i - 1, k)].Cum_Proba * p_down
+
+        disc = math.exp(-mkt.RiskFree * self.dt)
+        for k in band[T]:
+            nodes[(T, k)].OptPrice = params.Vi(nodes[(T, k)].UndPrice)
+        for i in range(T - 1, -1, -1):
+            for k in band[i]:
+                n = nodes[(i, k)]
+                up, down = n.Next_Up, n.Next_Down
+                if up and down:
+                    v = disc * (p_up * up.OptPrice + p_down * down.OptPrice)
+                elif up:
+                    v = disc * up.OptPrice
+                elif down:
+                    v = disc * down.OptPrice
+                else:
+                    v = 0.0
+                if params.Exercice == "American":
+                    v = max(v, params.Vi(n.UndPrice))
+                n.OptPrice = v
+        self.binom_nodes = nodes
+
+    # ============================================================
+    #                 TREE GREEKS + CUT TREE
+    # ============================================================
+    def compute_tree_greeks(self, mkt, params, pricer, base_price):
+        from datetime import timedelta
+        S0, sigma = mkt.SpotPrice, mkt.volatility
+        M0 = params.DateMaturity
+
+        saved = (pricer.Convergence, pricer.display_tree_bool, pricer.BS_condition,
+                 pricer.MC_condition, pricer.compute_DeltaAndGamma_tree_var,
+                 pricer.compute_Greeks)
         pricer.Convergence = False
         pricer.display_tree_bool = False
         pricer.BS_condition = False
         pricer.MC_condition = False
         pricer.compute_DeltaAndGamma_tree_var = False
-        pricer.Binom_condition = False
+        pricer.compute_Greeks = False
 
-        study_ts = min(pricer.timeSteps, MAX_TS_STRIKE_STUDY)
-        pricer.timeSteps = study_ts
+        def price_with(S=S0, sig=sigma, mat=M0):
+            mkt.SpotPrice, mkt.volatility, params.DateMaturity = S, sig, mat
+            self.build_tree(mkt, params, pricer, pricer.timeSteps, 0.0, False, True)
+            return self.Root_Node.OptPrice if self.Root_Node else 0.0
 
-        original_strike = params.strike
-        params.strike = original_strike - 5
+        P0 = base_price
+        h_S, h_sig = S0 * 0.01, 0.01
+        P_Su = price_with(S=S0 + h_S); P_Sd = price_with(S=S0 - h_S)
+        P_su = price_with(sig=sigma + h_sig); P_sd = price_with(sig=sigma - h_sig)
+        P_uu = price_with(S=S0 + h_S, sig=sigma + h_sig)
+        P_ud = price_with(S=S0 + h_S, sig=sigma - h_sig)
+        P_du = price_with(S=S0 - h_S, sig=sigma + h_sig)
+        P_dd = price_with(S=S0 - h_S, sig=sigma - h_sig)
+        P_sh = price_with(mat=M0 - timedelta(days=1))
 
+        mkt.SpotPrice, mkt.volatility, params.DateMaturity = S0, sigma, M0
+        (pricer.Convergence, pricer.display_tree_bool, pricer.BS_condition,
+         pricer.MC_condition, pricer.compute_DeltaAndGamma_tree_var,
+         pricer.compute_Greeks) = saved
+
+        return {
+            "Delta": (P_Su - P_Sd) / (2 * h_S),
+            "Gamma": (P_Su - 2 * P0 + P_Sd) / (h_S ** 2),
+            "Vega": (P_su - P_sd) / (2 * h_sig) / 100,
+            "Vomma": (P_su - 2 * P0 + P_sd) / (h_sig ** 2) / 10000,
+            "Vanna": (P_uu - P_ud - P_du + P_dd) / (4 * h_S * h_sig) / 100,
+            "Theta": P_sh - P0,
+        }
+
+    def cut_tree(self):
+        """Libère explicitement tous les liens (pour gros arbres matérialisés)."""
+        seen = set()
+
+        def _cut(n):
+            if n is None or id(n) in seen:
+                return
+            seen.add(id(n))
+            for attr in ("Next_Up", "Next_Down", "Next_Mid",
+                         "UpNode", "DownNode", "MidNode", "nprec"):
+                child = getattr(n, attr, None)
+                setattr(n, attr, None)
+                _cut(child)
+
+        _cut(getattr(self, "Root_Node", None))
+        self.binom_nodes = None
+        self.Root_Node = None
+        self.candidateMid = None
+
+    def debug_stats(self):
+        stats = {
+            "tree_type": self.last_tree_type,
+            "dt": self.dt,
+            "sqrt_alpha": getattr(self, "sqrt_alpha", None),
+            "nb_alloc": Node.nb_alloc,
+            "nb_nodes_alive": Node.live_count() if Node.COUNTING else None,
+        }
+        if self.Root_Node is not None:
+            p = [self.Root_Node.Proba_Up,
+                 self.Root_Node.Proba_Mid,
+                 self.Root_Node.Proba_Down]
+            stats["p_root"] = p
+            stats["p_root_sum"] = float(np.sum(p))
+            stats["p_root_min"] = float(np.min(p))
+        return stats
+
+    # ============================================================
+    #                       VEGA + STRIKE STUDY
+    # ============================================================
+    def compute_vega_tree(self, params, pricer, mkt):
+        # Conservé pour compatibilité mais remplacé par compute_tree_greeks
+        greeks = self.compute_tree_greeks(mkt, params, pricer,
+                                          self.Root_Node.OptPrice if self.Root_Node else 0.0)
+        return greeks["Vega"]
+
+    def compute_StrikeStudy(self, StrikeSteps, mkt, pricer, params, Extension):
+        df_strike = pd.DataFrame(0.0, index=range(StrikeSteps),
+                                 columns=["Strike", "Tree Price", "BS Price",
+                                          "Tree-BS", "Slope BS", "Slope Tree"])
+        pricer.Convergence = False
+        pricer.display_tree_bool = False
+        params.strike = params.strike - 5
         for T in range(1, StrikeSteps + 1):
             params.strike += 1
-            self.build_tree(mkt, params, pricer, study_ts,
-                            pricer.BS_price, False, True)
-            tree_price = self.Root_Node.OptPrice
-
-            bs_res = Ext.black_sholes()
-            bs_price = float(bs_res["BS Price"])
-
+            self.build_tree(mkt, params, pricer, pricer.timeSteps, pricer.BS_price, True, False)
+            Tree_price = self.Root_Node.OptPrice if self.Root_Node else 0.0
+            BS_Price = Extension.black_sholes()["BS Price"]
             df_strike.at[T, "Strike"] = params.strike
-            df_strike.at[T, "Tree Price"] = tree_price
-            df_strike.at[T, "BS Price"] = bs_price
-            df_strike.at[T, "Tree-BS"] = tree_price - bs_price
-
-            if binom is not None:
-                bp = float(binom.price_option(study_ts))
-                df_strike.at[T, "Binom Price"] = bp
-                df_strike.at[T, "Tree-Binom"] = tree_price - bp
-
-            if with_mc:
-                np.random.seed(42)
-                mp = float(Ext.monte_carlo_price(3000))
-                df_strike.at[T, "MC Price"] = mp
-                df_strike.at[T, "Tree-MC"] = tree_price - mp
-
-        params.strike = original_strike
-        pricer.timeSteps = saved_ts
-
-        pricer.Convergence = saved_conv
-        pricer.display_tree_bool = saved_tree
-        pricer.BS_condition = saved_bs
-        pricer.MC_condition = saved_mc
-        pricer.compute_DeltaAndGamma_tree_var = saved_dg
-        pricer.Binom_condition = saved_binom
-
+            df_strike.at[T, "Tree Price"] = Tree_price
+            df_strike.at[T, "BS Price"] = BS_Price
+            df_strike.at[T, "Tree-BS"] = Tree_price - BS_Price
         df_strike = self.compute_slope(df_strike, StrikeSteps)
-        df_plot = df_strike.iloc[1:].copy()
-
-        return pricer.create_plot_StrikeStudy(
-            df_plot,
-            df_plot["Strike"].iloc[0],
-            df_plot["Strike"].iloc[-1])
+        return pricer.create_plot_StrikeStudy(df_strike, df_strike.at[2, "Strike"],
+                                              df_strike.at[T, "Strike"])
 
     def compute_slope(self, df_strike, StrikeSteps):
-        slope_pairs = [("BS Price", "Slope BS"),
-                       ("Tree Price", "Slope Tree"),
-                       ("Binom Price", "Slope Binom"),
-                       ("MC Price", "Slope MC")]
         for T in range(2, StrikeSteps):
-            for price_col, slope_col in slope_pairs:
-                if price_col in df_strike.columns and slope_col in df_strike.columns:
-                    denom = (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"])
-                    if denom != 0:
-                        df_strike.at[T, slope_col] = (
-                            (df_strike.at[T + 1, price_col] - df_strike.at[T - 1, price_col]) / denom)
+            df_strike.at[T, "Slope BS"] = ((df_strike.at[T + 1, "BS Price"] - df_strike.at[T - 1, "BS Price"]) /
+                                           (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"]))
+            df_strike.at[T, "Slope Tree"] = ((df_strike.at[T + 1, "Tree Price"] - df_strike.at[T - 1, "Tree Price"]) /
+                                             (df_strike.at[T + 1, "Strike"] - df_strike.at[T - 1, "Strike"]))
         return df_strike
 
-    # ------------------------------------------------------------------
-    def display_tree(self, pricer, params=None, max_display_depth=MAX_SVG_DEPTH):
+    # ============================================================
+    #                         DISPLAY
+    # ============================================================
+    def display_tree(self, pricer):
+        if getattr(self, "binom_nodes", None) is not None and self.last_tree_type == "Binomial":
+            return self._display_binomial_tree(pricer)
+
         start_time_tree = time.time()
-        actual_depth = min(max_display_depth, pricer.timeSteps)
-        try:
-            from TreeImage import TreeImage
-            image = TreeImage(self, actual_depth, params=params)
-            self.svg_str = image.as_str()
-            print(f"[SVG] généré : {len(self.svg_str):,} caractères, "
-                  f"{actual_depth} colonnes affichées (sur {pricer.timeSteps}).")
-        except ImportError as e:
-            print(f"[SVG] ImportError : {e}. Installe : pip install svg-py")
-            self.svg_str = None
-        except Exception as e:
-            import traceback
-            print(f"[SVG] Erreur : {e}")
-            traceback.print_exc()
-            self.svg_str = None
+        max_depth = pricer.timeSteps
+        width = max_depth + 1
+        self.df = pd.DataFrame(index=range(2 * max_depth + 1), columns=range(width), dtype=object)
+        col_center = 0
+        current_node = self.Root_Node
+        for step in range(1, max_depth + 1):
+            if current_node is None:
+                break
+            self.df.iloc[max_depth, col_center] = current_node.Proba_Mid
+            midNode = current_node
+            row = 1
+            while current_node.UpNode is not None:
+                current_node = current_node.UpNode
+                self.df.iloc[max_depth - row, col_center] = current_node.Proba_Mid
+                row += 1
+            current_node = midNode
+            row = 1
+            while current_node.DownNode is not None:
+                current_node = current_node.DownNode
+                self.df.iloc[max_depth + row, col_center] = current_node.Proba_Mid
+                row += 1
+            current_node = midNode.Next_Mid
+            col_center += 1
         return time.time() - start_time_tree
+
+    def _display_binomial_tree(self, pricer):
+        start = time.time()
+        nodes = self.binom_nodes
+        T = max(i for (i, k) in nodes.keys())
+        self.df = pd.DataFrame(index=range(T + 1), columns=range(T + 1), dtype=object)
+        for (i, k), n in nodes.items():
+            self.df.iloc[T - k, i] = n.UndPrice
+        return time.time() - start
