@@ -126,12 +126,10 @@ if "results" in st.session_state:
     if "New TS" in results:
         st.caption(f"🔧 New Time Step (spread error) : {results['New TS']:.0f}")
 
-    # --- Convergence ---
     if "ConvergenceFig" in results and results["ConvergenceFig"] is not None:
         st.subheader("Convergence")
         st.pyplot(results["ConvergenceFig"])
 
-    # --- Strike Study ---
     if "StrikeStudyFig" in results and results["StrikeStudyFig"] is not None:
         st.subheader("Strike Study")
         st.pyplot(results["StrikeStudyFig"])
@@ -141,16 +139,15 @@ if "results" in st.session_state:
     tab1, tab2, tab3 = st.tabs(
         ["📊 Greeks", "🧪 Debug / Vérifications", "📈 Arbre & Heatmap"])
 
+    # ---------------- Greeks ----------------
     with tab1:
         if "GreeksTable" in results:
             st.dataframe(results["GreeksTable"].style.format("{:.6f}"))
-            csv = results["GreeksTable"].to_csv().encode()
-            st.download_button("Télécharger Greeks (CSV)", csv,
-                               file_name="greeks.csv", mime="text/csv")
             st.caption(f"⏱ Time with Greeks: {results.get('TimeGreeks', 0):.4f}s")
         else:
             st.info("Coche 'Calculate the Greeks' pour afficher le tableau.")
 
+    # ---------------- Debug ----------------
     with tab2:
         st.subheader("Vérifications théoriques automatiques")
         st.caption("⚠️ Ces tests relancent le pricer plusieurs fois (peut être lent).")
@@ -167,24 +164,45 @@ if "results" in st.session_state:
 
         st.markdown("---")
         st.subheader("Statistiques internes du dernier run")
+        st.caption(
+            "Ces valeurs servent à diagnostiquer l'arbre : "
+            "**tree_type** = type utilisé ; **dt_years** = pas de temps en années ; "
+            "**sqrt_alpha** = facteur de branchement ; "
+            "**nb_alloc_total** = nombre total de Node créés depuis le lancement ; "
+            "**nb_nodes_alive_now** = Node encore en mémoire (uniquement si Debug mode) ; "
+            "**p_root_up_mid_down** = probabilités (up, mid, down) à la racine — "
+            "**p_root_sum doit valoir 1** et **p_root_min doit être ≥ 0**."
+        )
         info = results.get("DebugInfo")
         if info:
             st.json(info)
         else:
-            st.warning("Active 'Debug mode' pour voir les stats.")
+            st.info("Active 'Debug mode' puis relance pour voir ces statistiques.")
 
+    # ---------------- Arbre ----------------
     with tab3:
         df_tree = results.get("TreeDf")
         if df_tree is None or (hasattr(df_tree, "empty") and df_tree.empty):
-            st.info("Coche 'Display the Tree' puis relance.")
+            st.info("Coche 'Display the Tree' puis relance pour voir l'arbre.")
         else:
-            st.subheader("Heatmap (couleur = prix sous-jacent)")
-            fig, ax = plt.subplots(figsize=(12, 6))
+            # --- Bouton de téléchargement ---
+            csv = df_tree.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇️ Télécharger l'arbre (CSV)",
+                data=csv,
+                file_name="tree.csv",
+                mime="text/csv",
+            )
+
+            st.subheader("Heatmap (couleur = prix du sous-jacent)")
+            fig, ax = plt.subplots(figsize=(14, 7))
             data = df_tree.astype(float).values
-            im = ax.imshow(data, aspect="auto", cmap="viridis", interpolation="nearest")
+            im = ax.imshow(data, aspect="auto", cmap="viridis",
+                           interpolation="nearest")
             plt.colorbar(im, ax=ax, label="S")
             ax.set_xlabel("Time step")
             ax.set_ylabel("Node index")
             st.pyplot(fig)
+
             st.subheader("Tableau brut")
             st.dataframe(df_tree)

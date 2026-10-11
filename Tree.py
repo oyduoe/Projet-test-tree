@@ -36,6 +36,14 @@ class Tree:
     # ============================================================
     def init(self, mkt, params, pricer, IsVega):
         self.Market = mkt
+
+        # Si on fait la convergence OU l'étude du strike, on a besoin
+        # d'une référence BS même si la case n'est pas cochée.
+        if pricer.Convergence or pricer.StrikeStudy:
+            from Extension import Extension
+            _ext = Extension(mkt, params, pricer)
+            _ext.black_sholes()  # met à jour pricer.BS_price
+
         if pricer.Convergence:
             for T in range(1, pricer.timeSteps + 1):
                 print(f"Calcul du prix pour {T} Time Steps")
@@ -354,7 +362,6 @@ class Tree:
         S0 = mkt.SpotPrice
         threshold = max(getattr(pricer, "PruningTreshold", 0.0), 0.0)
 
-        # ---- Forward : bandes autorisées + cum_proba ----
         band = [[] for _ in range(T + 1)]
         cum = {(0, 0): 1.0}
         band[0] = [0]
@@ -374,7 +381,6 @@ class Tree:
                 for key in [key for key in cum if key[0] <= i - 2]:
                     del cum[key]
 
-        # ---- Backward : rolling 2 colonnes ----
         def price_at(i, k):
             return (S0 * (self.sqrt_alpha * exp_r_dt) ** k
                     * (exp_r_dt / self.sqrt_alpha) ** (i - k))
@@ -402,9 +408,6 @@ class Tree:
         price = V_prev.get(0, 0.0)
         time_calculation = time.time() - start_time
 
-        # ---- Matérialisation Node (petits arbres) pour delta/gamma/display ----
-        # Binomial : (N+1)(N+2)/2 nœuds. N=2000 → ~2M nœuds ≈ 400 MB.
-        # Au-delà, on ne matérialise pas (le pricing reste exact).
         need_nodes = pricer.compute_DeltaAndGamma_tree_var or pricer.display_tree_bool
         can_materialize = need_nodes and T <= 2000
         if can_materialize:
@@ -412,7 +415,6 @@ class Tree:
         elif need_nodes:
             print(f"⚠ Matérialisation binomiale désactivée pour T={T} (> 2000)")
 
-        # ---- Affichage arbre ----
         if pricer.display_tree_bool and T <= 2000:
             self.time_calculation_tree = self.display_tree(pricer)
 
@@ -549,16 +551,16 @@ class Tree:
     def debug_stats(self):
         stats = {
             "tree_type": self.last_tree_type,
-            "dt": self.dt,
+            "dt_years": self.dt,
             "sqrt_alpha": getattr(self, "sqrt_alpha", None),
-            "nb_alloc": Node.nb_alloc,
-            "nb_nodes_alive": Node.live_count() if Node.COUNTING else None,
+            "nb_alloc_total": Node.nb_alloc,
+            "nb_nodes_alive_now": Node.live_count() if Node.COUNTING else None,
         }
         if self.Root_Node is not None:
             p = [self.Root_Node.Proba_Up,
                  self.Root_Node.Proba_Mid,
                  self.Root_Node.Proba_Down]
-            stats["p_root"] = p
+            stats["p_root_up_mid_down"] = p
             stats["p_root_sum"] = float(np.sum(p))
             stats["p_root_min"] = float(np.min(p))
         return stats
@@ -578,10 +580,12 @@ class Tree:
             columns=["Strike", "Tree Price", "BS Price", "MC Price",
                      "Tree-BS", "Tree-MC", "Slope BS", "Slope Tree", "Slope MC"])
 
+        saved_conv = pricer.Convergence
+        saved_disp = pricer.display_tree_bool
         pricer.Convergence = False
         pricer.display_tree_bool = False
-        params.strike = params.strike - 5
 
+        params.strike = params.strike - 5
         for T in range(1, StrikeSteps + 1):
             params.strike += 1
             self.build_tree(mkt, params, pricer, pricer.timeSteps,
@@ -600,6 +604,9 @@ class Tree:
             df_strike.at[T, "Tree-BS"] = Tree_price - BS_Price
             if not np.isnan(MC_Price):
                 df_strike.at[T, "Tree-MC"] = Tree_price - MC_Price
+
+        pricer.Convergence = saved_conv
+        pricer.display_tree_bool = saved_disp
 
         df_strike = self.compute_slope(df_strike, StrikeSteps,
                                        with_mc=pricer.MC_condition)
@@ -629,34 +636,42 @@ class Tree:
         start_time_tree = time.time()
         max_depth = pricer.timeSteps
         width = max_depth + 1
+        # 2*max_depth+1 lignes : c'est la hauteur maximale du tronc à maturité
         self.df = pd.DataFrame(index=range(2 * max_depth + 1),
                                columns=range(width), dtype=object)
-        col_center = 0
+
+        # On remplit TOUTES les colonnes 0..max_depth (y compris la dernière)
         current_node = self.Root_Node
-        for step in range(1, max_depth + 1):
+        for step in range(0, max_depth + 1):
             if current_node is None:
                 break
-            self.df.iloc[max_depth, col_center] = current_node.Proba_Mid
+            # mid (colonne du tronc)
+            self.df.iloc[max_depth, step] = current_node.UndPrice
             midNode = current_node
+
             row = 1
             while current_node.UpNode is not None:
                 current_node = current_node.UpNode
-                self.df.iloc[max_depth - row, col_center] = current_node.Proba_Mid
+                self.df.iloc[max_depth - row, step] = current_node.UndPrice
                 row += 1
+
             current_node = midNode
             row = 1
             while current_node.DownNode is not None:
                 current_node = current_node.DownNode
-                self.df.iloc[max_depth + row, col_center] = current_node.Proba_Mid
+                self.df.iloc[max_depth + row, step] = current_node.UndPrice
                 row += 1
+
+            # Colonne suivante : on avance sur le tronc
             current_node = midNode.Next_Mid
-            col_center += 1
+
         return time.time() - start_time_tree
 
     def _display_binomial_tree(self, pricer):
         start = time.time()
         nodes = self.binom_nodes
         T = max(i for (i, k) in nodes.keys())
+        # Binomial : T+1 colonnes (0..T), T+1 lignes (k = 0..T)
         self.df = pd.DataFrame(index=range(T + 1), columns=range(T + 1), dtype=object)
         for (i, k), n in nodes.items():
             self.df.iloc[T - k, i] = n.UndPrice
